@@ -51,6 +51,20 @@ profil dosyası depoya girebilir.
 bir belgeye yazıldığında veri bozuluyordu ("Fiyat Farkı" → "Fiyat Fark?"). `Program.cs`
 artık `Console.OutputEncoding = UTF8`.
 
+### Tasarım sınırı (03.09.2026)
+
+`ISqlDialect` dikişi **SQL lehçeleri** içindir (SQL Server · PostgreSQL · Oracle seam).
+SQL olmayan kaynaklar (ör. Odoo `search_read`/`fields_get`, REST API'ler) buraya
+**eklenmez** — eklenirse soyutlama yalan söyler: "dialect" artık lehçe değil, kaynak türü
+olur ve her komut kendi istisnasını taşımaya başlar. O kaynaklar kendi aracını yazar; ortak
+olan **kod değil sözleşmedir**: tek kimlik yolu · izin listesi tabanlı salt-okuma · çıkış
+kodu 0/1/2 (2 = koşamadı, yeşil değil) · görünür retry.
+
+`--read-only` **izin listesidir**, yasak listesi değil: yalnız `SELECT` ve `WITH…SELECT`
+geçer; çoklu ifade, `EXEC`/`sp_executesql`, `SELECT … INTO`, `SET`, `DECLARE` ve tanınmayan
+her başlangıç reddedilir. Sebep: yasak listesi listede olmayan yazma yolunu kaçırır ve
+kaçırdığını söylemez. Red mesajı neyi tanımadığını yazar.
+
 **Neden bu dört özellik:** BKM semantik katmanında (`D:\Dev\pusula/sema`) öğrenilen şema
 gerçekleri elle yazılmış bir Python koşucusuyla yeniden koşuluyordu; `assert` bunu araç
 düzeyine taşır. `lookup` ise "kod listesi elle yazılmaz, lookup tablosundan okunur"
