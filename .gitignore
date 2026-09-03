@@ -1,0 +1,11 @@
+# Bağlantı bilgisi — profil string'lerinde şifre olabilir (v2.2'den beri ${ENV} ile
+# dışarıdan verilebilir, ama dosya yine depoya girmez).
+sqlcli.json
+
+# Build çıktıları
+bin/
+obj/
+nupkg/
+
+# Araç durumu (kullanıcı-yerel): kayıtlı sorgular + geçmiş
+.sqlcli/
