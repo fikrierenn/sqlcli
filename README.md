@@ -1,4 +1,4 @@
-# sqlcli v2.1
+# sqlcli v2.2
 
 **SQL Server + PostgreSQL** için modern, hızlı, çoklu-profil destekli yönetim CLI'ı.
 Migration + keşif + query + performans + history + export/import/diff hepsi tek araçta.
@@ -17,6 +17,45 @@ sqlcli migrate-status          # Disk vs DB migration karşılaştır
 sqlcli active-sessions         # Aktif oturum + blocking
 sqlcli slow-queries --top 10   # Plan cache'den en yavaşlar
 ```
+
+## v2.2 — koşulabilir denetim + güvenlik + dayanıklılık (03.09.2026)
+
+```bash
+# ASSERT — sorgu sonucunu beklenenle karşılaştır; uymazsa exit 1
+sqlcli assert --profile erp --eq 0 --label belge-tipi   --why "Yeni belge tipinin cirosu hiçbir rapora girmez"   "SELECT COUNT(*) FROM Sales WHERE DocumentsTypeId NOT IN (1,2,3,6,7,8)"
+# exit 0 = geçti · 1 = KIRIK · 2 = KOŞAMADI (bağlantı/SQL hatası — yeşil DEĞİL)
+
+# LOOKUP — kod/tip tablosunu YAML/JSON dök, canlı kullanım sayısıyla
+sqlcli lookup --profile erp dbo.irsTip_vw --count-from dbo.irsHrk.ehTip
+#   values:
+#     0: 'Alış — 1.458.421 kayıt'
+#     15: 'Örnek Alımı — canlıda yok'
+
+# SALT-OKUMA muhafızı (bayrak veya SQLCLI_READONLY=1)
+sqlcli query --read-only "UPDATE ..."     # → REDDEDİLDİ, exit 2
+
+# ADLI PARAMETRE — tip açık yazılır, tarih TAHMİN EDİLMEZ
+sqlcli query --param bas:date=2026-09-01 "SELECT ... WHERE d >= @bas"
+sqlcli query --param kod:str=20260901 "..."   # metin olarak zorla
+
+# ZAMAN AŞIMI + geçici hata retry (yalnız 10053/10060/-2/1205 gibi; görünür)
+sqlcli query --timeout 60 --retry 2 "SELECT ..."
+```
+
+**Bağlantıda `${ENV}` genişletmesi:** `sqlcli.json` artık şifre TAŞIMAZ —
+`Password=${MSSQL_PASSWORD}` yazılır, değer ortam değişkeninden ya da depo kökündeki
+`.env`'den gelir. Karşılığı bulunamayan yer tutucu sessiz geçmez, hata verir. Böylece
+profil dosyası depoya girebilir.
+
+**UTF-8 çıktı:** Windows konsolu Türkçe'de cp857 yazıyordu; çıktı dosyaya/pipe'a alınıp
+bir belgeye yazıldığında veri bozuluyordu ("Fiyat Farkı" → "Fiyat Fark?"). `Program.cs`
+artık `Console.OutputEncoding = UTF8`.
+
+**Neden bu dört özellik:** BKM semantik katmanında (`D:\Dev\pusula/sema`) öğrenilen şema
+gerçekleri elle yazılmış bir Python koşucusuyla yeniden koşuluyordu; `assert` bunu araç
+düzeyine taşır. `lookup` ise "kod listesi elle yazılmaz, lookup tablosundan okunur"
+kuralının aracıdır — ölçülen vaka: 20 kod belgelenmişti, lookup'ta 34 vardı ve
+belgelenmeyenlerden biri 364.226 satırlık bir hareket tipiydi.
 
 ## Kurulum
 
