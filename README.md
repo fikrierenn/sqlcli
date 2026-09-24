@@ -1,4 +1,58 @@
-# sqlcli v2.2
+# sqlcli — ölçümün eli (v2.2.0)
+
+**Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
+ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
+kapı iddiaları.
+
+*v2.2.0 · .NET 10 · global araç adı `sqlcli`.*
+
+## Neden var
+
+Bir sayı **iddia** ile **ölçüm** arasında fark yaratır. `sqlcli assert --eq 0 "SELECT COUNT(*) …"` bir kapının içine girer ve uymazsa kırmızı
+verir; `sqlcli lookup dbo.irsTip_vw --count-from dbo.irsHrk.ehTip` kod listesini **canlı kullanım sayılarıyla** döker, elle yazılan liste
+bayatlamaz. `--read-only` izin listesidir (yalnız `SELECT`/`WITH…SELECT`), ERP salt-okuma politikasını araç düzeyinde zorlar.
+
+## Çıkış sözleşmesi
+
+`0` geçti · `1` KIRIK (sonuç beklenene uymadı) · `2` KOŞAMADI (bağlantı/SQL hatası — **yeşil sayılmaz**). Ölçememek, temiz olmakla aynı şey değildir.
+
+## Hızlı başlangıç
+
+```bash
+dotnet pack -c Release -o ./nupkg && dotnet tool install -g --add-source ./nupkg SqlCli
+cd <profil dosyasının olduğu dizin>          # sqlcli.json çalışma dizininden okunur
+sqlcli query  --profile erp   --read-only --format md "SELECT TOP 5 * FROM dbo.urn"
+sqlcli assert --profile zirve --eq 0 --why "aktif personelde TC boş olamaz" "SELECT COUNT(*) FROM dbo.vw_PersonelDepartman WHERE Ict IS NULL AND Vatno IS NULL"
+sqlcli lookup --profile erp dbo.irsTip_vw --count-from dbo.irsHrk.ehTip
+```
+
+Profil örneği (`sqlcli.json`): `"zirve": "Server=${ZIRVE_HOST};Database=${ZIRVE_DATABASE};User Id=${ZIRVE_USER};Password=${ZIRVE_PASSWORD};…"` —
+yer tutucu ortamdan, yoksa depo kökündeki `.env`den dolar; bulunamazsa **hata verir**, sessiz geçmez.
+
+## BKM Kitap yazılım omurgası — bu depo nerede duruyor
+
+BKM Kitap'ta yazılım tek tek uygulamalar değil, birbirine oturan **katmanlar** olarak büyüyor. Beş depo, tek omurga:
+
+| Katman | Depo | Görevi |
+|---|---|---|
+| **Kurallar** | [claude-context-template](https://github.com/fikrierenn/claude-context-template) (→ *Norma*) | Her deponun doğuştan aldığı 19 evrensel kural, kapılar, adlandırma standardı, 3.000+ sözcüklük ak liste. Kopyalanmaz, işaret edilir. |
+| **Ortak .NET katmanı** | [Solum](https://github.com/fikrierenn/Solum) | Kimlik, yetki, çok kiracılılık, denetim izi, migrasyon, şema sapma doğrulaması — bir kez yazılır, her ürün referansla alır. |
+| **Veri gerçeği** | [pusula](https://github.com/fikrierenn/pusula) | ERP · Encore · Zirve · panel şemalarının **ölçülmüş** tanımı (10.000+ satır YAML), 150+ sorgu, 40+ plan. Her rapor ve uygulama buradan beslenir; iki gerçek doğmaz. |
+| **Ölçüm aracı** | [sqlcli](https://github.com/fikrierenn/sqlcli) | "İddia değil ölçüm": profilli SQL CLI, salt-okuma muhafızı, `assert`/`lookup`, çıkış sözleşmesi 0/1/2. Kapıların ve şemanın ölçüm eli. |
+| **Ürünler** | [bkm-magaza](https://github.com/fikrierenn/bkm-magaza) ve diğerleri (vardiya, anlık ciro, etiket, el terminali…) | Sahada çalışan uygulamalar. İlk örnek bkm-magaza: ~200 mağaza personelinin telefonunda ürün bulma. |
+
+**Yön (GMY, 2026):** bütün uygulamalar **tek kullanıcı ve yetki yönetimine** taşınır (Solum İSTEK-31: kişi → çalışma dönemi → hesap → cihaz;
+kimlik İK sisteminden türer, işten çıkış uygulamayı kendiliğinden kapatır). Yeni bir uygulama bu omurgaya oturur; kendi kullanıcı tablosunu,
+kendi kuralını, kendi şema kopyasını yazmaz.
+
+**Çalışma ilkeleri (hepsi kapıyla zorlanır, niyet olarak bırakılmaz):** önce ölç, sonra yaz · kural değil kapı · sözleşme değişince eskisi bir sürüm
+çift yaşar · kod İngilizce, insan dili Türkçe · hiçbir sır depoya girmez · her commit tek konu, her kapı sabotajla kırılabilir olduğunu kanıtlar.
+
+---
+
+## Ayrıntılar (teknik README, korunuyor)
+
+### sqlcli v2.2
 
 **SQL Server + PostgreSQL** için modern, hızlı, çoklu-profil destekli yönetim CLI'ı.
 Migration + keşif + query + performans + history + export/import/diff hepsi tek araçta.
