@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.2.0)
+# sqlcli — ölçümün eli (v2.3.0)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.2.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.3.0 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -267,6 +267,13 @@ sqlcli relationships ReportCatalog
 - **`kill`** confirm prompt'lı (--yes ile bypass)
 
 ## Sürüm Notları
+
+### v2.3 (2026-09-26) — Sürüm muhafızı
+- **Eski kopya çalışmaz:** her açılışta çalışan sürüm, kurulu global tool'un sürümüyle (ve `SQLCLI_SOURCE` verilmişse o kaynaktaki `sqlcli.csproj` ile) karşılaştırılır. Eskiyse kırmızı hata + güncelleme komutu, **exit 2**. Acil kaçış: `SQLCLI_SKIP_VERSION_CHECK=1` (uyarıyla devam). `surum`/`version`/`--version` muaf.
+- "Makinede çalışmış en yüksek sürüm" işareti **bilerek yok**: kurulmamış bir Debug derlemesinin tek çalıştırılışı kurulu aracı kilitlerdi.
+- **`surum` komutu:** kurulu sürüm + derlendiği commit; `--kaynak <klon>` (ya da `SQLCLI_KAYNAK`) ile kaynağın KOD commit'lerinin gerisinde mi (0 güncel · 1 geride · 2 kontrol edilemedi), `--uzak` önce fetch. `surum` komutu olmayan ≤2.2 kurulumlar için `tools/surum-kontrol.ps1`.
+- **Ağ/WebDAV sürücüsünde askıda kalma düzeltildi:** çalışma dizini WebDAV iken (ör. `D:\` → DavWWWRoot) her komut işini bitirip süreç kapanmıyordu (host'un yapılandırma dosyası izleyicisi). CLI'da izleme kapatıldı (`DOTNET_hostBuilder__reloadConfigOnChange=false`).
+- Açılış satırı sürümü derlemeden okur (eskiden sabit "v2.2").
 
 ### v2.1 (2026-07-02) — Çok-sağlayıcı
 - **PostgreSQL desteği** (Npgsql): connection string'ten otomatik sağlayıcı tespiti (`Host=`/`postgres://` → PG).
