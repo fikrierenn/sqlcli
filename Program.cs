@@ -41,7 +41,13 @@ using SqlCli.Core;
 // (sema, rapor) yazılırsa veri BOZULUR. UTF-8'e sabitliyoruz: hem terminal hem pipe doğru.
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* yönlendirilmiş stdout */ }
 
-AnsiConsole.MarkupLine($"[grey]=== sqlcli v{VersionGuard.CurrentText} — SQL Server + PostgreSQL CLI ===[/]");
+// --format json istendiyse banner stderr'e: stdout doğrudan parse edilebilsin (eskiden
+// çağıranlar banner'ı ve ANSI kodlarını elle ayıklıyordu — pusula 2026-06-18 günlüğü).
+var jsonCikti = args.Select((a, i) => a.Equals("--format=json", StringComparison.OrdinalIgnoreCase)
+    || (a == "--format" && i + 1 < args.Length && args[i + 1].Equals("json", StringComparison.OrdinalIgnoreCase))).Any(x => x);
+var banner = $"=== sqlcli v{VersionGuard.CurrentText} — SQL Server + PostgreSQL CLI ===";
+if (jsonCikti) Console.Error.WriteLine(banner);
+else AnsiConsole.MarkupLine($"[grey]{banner}[/]");
 
 // Makinede birden çok kopya var; eskisi çalışırsa burada durur (exit 2 = KOŞAMADI).
 VersionGuard.EnsureLatest(args);

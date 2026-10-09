@@ -13,9 +13,16 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>sqlcli</ToolCommandName>
     <PackageId>SqlCli</PackageId>
-    <Version>2.3.0</Version>
-    <Description>Çok-sağlayıcı (SQL Server + PostgreSQL) yönetim + keşif + migration CLI. Multi-profile connection, describe/search/relationships, query history, performance diagnostics, cross-provider export/import/diff. Oracle için dialect seam hazır. v2.2: assert (koşulabilir veri denetimi, exit 1), lookup (kod tablosu → YAML/JSON), --read-only muhafızı, adlı parametre, zaman aşımı + geçici hata retry, bağlantı string'inde ${ENV} genişletmesi. v2.3: sürüm muhafızı (eski kopya çalışırsa hata + güncelle). Spectre.Console UX + Cocona CLI framework.</Description>
+    <Version>2.4.0</Version>
+    <Description>Çok-sağlayıcı (SQL Server + PostgreSQL) yönetim + keşif + migration CLI. Multi-profile connection, describe/search/relationships, query history, performance diagnostics, cross-provider export/import/diff. Oracle için dialect seam hazır. v2.2: assert (koşulabilir veri denetimi, exit 1), lookup (kod tablosu → YAML/JSON), --read-only muhafızı, adlı parametre, zaman aşımı + geçici hata retry, bağlantı string'inde ${ENV} genişletmesi. v2.3: sürüm muhafızı (eski kopya çalışırsa hata + güncelle). v2.4: copy — --read-only varsayılan açık, --param, --check-constraints, --fire-triggers, --atomic, --format json (aktarılan satır, süre, kaynak/hedef sunucu+db). Spectre.Console UX + Cocona CLI framework.</Description>
   </PropertyGroup>
+
+  <!-- Test projesi aracın kendi derlemesine/paketine girmez -->
+  <ItemGroup>
+    <Compile Remove="tests/**" />
+    <None Remove="tests/**" />
+    <Content Remove="tests/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Cocona" Version="2.2.0" />

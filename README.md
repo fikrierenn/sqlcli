@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.3.0)
+# sqlcli — ölçümün eli (v2.4.0)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.3.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.4.0 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -209,6 +209,26 @@ sqlcli --profile bkm rows
 | `search <pattern> [--scope=tables\|columns\|both]` | Tablo/kolon adı arama (LIKE wildcard, `*` → `%`) |
 | `relationships <table>` / `rel <table>` | Gelen + giden FK'lar |
 
+### ETL — `copy` (SQL Server → SQL Server, SqlBulkCopy)
+
+```bash
+sqlcli copy --from "<kaynak>" --to "<hedef>" --query "SELECT Id, Deger FROM dbo.X WHERE Tarih >= @Bas"   --param Bas:date=2026-01-01 --table dbo.Hedef --batch 50000 --check-constraints --fire-triggers --format json
+```
+
+| Bayrak | Anlamı |
+|---|---|
+| `--read-only` | **Varsayılan AÇIK** (v2.4). Kaynak sorgu salt-okuma muhafızından geçmezse kaynağa hiçbir şey gitmeden red, exit 2. Kapatmak yalnız `--read-only=false` (uyarı basılır); `SQLCLI_READONLY=1` varken kapatılamaz. |
+| `--param ad[:tip]=deger` | Kaynak sorguya adlı parametre (query/assert ile aynı kurallar). |
+| `--check-constraints` · `--fire-triggers` | SqlBulkCopy varsayılanı CHECK/FK **denetlemez**, INSERT tetikleyicisi **çalıştırmaz**. Hedefte kısıt/mühür tetikleyicisi varsa aç. |
+| `--atomic` | TRUNCATE + yükleme tek hedef transaction'ı: hata olursa hedef **önceki hâline** döner. `--parallel` ile olmaz. |
+| `--truncate` · `--batch` · `--tablock` (açık) · `--parallel N --partkey <kolon>` · `--timeout` | Önceki gibi. |
+| `--format table\|json` | `json`: stdout'a **tek nesne** — `durum`, `satir` (bu koşuda **aktarılan** satır; tablo toplamı değil), `sure_ms`, `kaynak_sunucu`, `kaynak_db`, `hedef_sunucu`, `hedef_db`, `hedef_toplam`, `read_only`, `check_constraints`, `fire_triggers`, `atomic`, `truncate`. Hata: `{"durum":"HATA","hata_no":547,"hata":"..."}`. Banner + ilerleme stderr'e. `table`: son satır `SONUC satir=N sure_ms=M`. |
+
+**Çıkış:** 0 aktarım tamam · 2 KOŞAMADI (muhafız reddi, bağlantı, SQL hatası — kısıt ihlali 547 dahil). Mesajda SQL hata numarası yazar.
+
+**Yarım yükleme (`--atomic` YOKKEN):** TRUNCATE ayrı bağlantıda hemen işlenir; yükleme her `--batch` satırda bir işlenir. Hata olursa
+tablo boşaltılmış ve hataya kadar tamamlanan batch'ler hedefte **kalmış** olur (hata mesajı bunu söyler). İstenmiyorsa `--atomic`.
+
 ### Performance
 
 | Komut | Açıklama |
@@ -265,8 +285,17 @@ sqlcli relationships ReportCatalog
 - **Password masking:** `baglanti` çıktısında `Password=***`
 - **Tolerant mode:** Sadece bilinen idempotent hata kodlarında devam (2714/1913/2627/2601/1505/2705)
 - **`kill`** confirm prompt'lı (--yes ile bypass)
+- **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.4 (2026-10-09) — `copy` sertleştirmesi (FIFO plan 001 S paketi)
+- `--read-only` **varsayılan açık**; `--param`; `--check-constraints` / `--fire-triggers`; `--atomic`; `--format json`.
+- `satir` artık bu koşuda **aktarılan** sayı (`SqlBulkCopy.RowsCopied64`); eskiden hedef tablonun tamamı sayılıyordu (birden çok yükleme tutan tabloda yanlış).
+- Kaynak ve hedef `@@SERVERNAME` / `DB_NAME()` çıktıda (aynı DB adı iki sunucuda olabilir — yanlış sunucuya yazma görünür olsun).
+- Her hata exit 2 (eskiden yakalanmayan istisna exit 1 idi).
+- `--format json` istenen **her** komutta banner stderr'e gider: stdout doğrudan parse edilir.
+- İlk test projesi: `tests/SqlCli.Tests` — muhafız birim testleri + `copy` uçtan uca (gerçek SQL Server, `SQLCLI_TEST_SQL`, yoksa `localhost`). Sunucuya ulaşılamazsa testler kırmızı olur, atlanmaz. `dotnet test tests/SqlCli.Tests`
 
 ### v2.3 (2026-09-26) — Sürüm muhafızı
 - **Eski kopya çalışmaz:** her açılışta çalışan sürüm, kurulu global tool'un sürümüyle (ve `SQLCLI_SOURCE` verilmişse o kaynaktaki `sqlcli.csproj` ile) karşılaştırılır. Eskiyse kırmızı hata + güncelleme komutu, **exit 2**. Acil kaçış: `SQLCLI_SKIP_VERSION_CHECK=1` (uyarıyla devam). `surum`/`version`/`--version` muaf.
