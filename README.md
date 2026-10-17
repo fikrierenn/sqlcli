@@ -209,6 +209,45 @@ sqlcli --profile bkm rows
 | `search <pattern> [--scope=tables\|columns\|both]` | Tablo/kolon adı arama (LIKE wildcard, `*` → `%`) |
 | `relationships <table>` / `rel <table>` | Gelen + giden FK'lar |
 
+### decrypt — `WITH ENCRYPTION` çözme (SQL Server, DAC gerektirir)
+
+dbForge SQL Decryptor benzeri: `WITH ENCRYPTION` ile şifrelenmiş **SP / view / function / trigger** tanımını çözer.
+
+```bash
+# Tek nesne — tanım stdout'a (dosyaya yönlendirmek için > kullan)
+sqlcli decrypt --profile erp "dbo.sip_sevkisle" > dbo.sip_sevkisle.sql
+
+# Toplu — her nesne klasöre şema.ad.sql olarak
+sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp
+```
+
+| Bayrak | Anlamı |
+|---|---|
+| `<ad>` | `şema.ad` veya `ad`. `--like` verildiğinde boş bırakılabilir. |
+| `--like <desen>` | Toplu: ada göre `LIKE` (ör. `%sevk%`). Yalnız **şifreli** nesneleri seçer. |
+| `--out <klasör>` | Her nesneyi `şema.ad.sql` olarak yazar (UTF-8). Verilmezse stdout. |
+| `--dac-port <n>` | DAC TCP portu (ör. `1434`). Verilmezse SQL Browser çözer. |
+| `--dac-server <ad>` | DAC sunucu adını tamamen override et (`admin:` öneki otomatik). |
+| `--overwrite` | `--out` ile var olan dosyanın üzerine yaz. |
+| `--dry-run` | Hedefi **ALTER etme**; yalnız uzunluk + planı bildir. |
+
+**Nasıl çalışır (güvenlik):** Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içindedir ve yalnız **DAC
+(Dedicated Admin Connection)** üzerinden okunur — bağlantı `admin:` önekiyle açılır. Çözme, bilinen-düz-metin
+XOR'udur: anahtar akışı nesnenin **objid**'ine bağlıdır (içeriğe değil), bu yüzden hedef **tek transaction** içinde
+aynı uzunlukta bir kukla metne `ALTER` edilir, şifreli hali okunur ve hemen **`ROLLBACK`** ile özgün haline
+döndürülür. Hedef **kalıcı olarak asla değişmez**; yazma yalnız geri alınan bu ALTER'dır. Çözme sırasında hedef
+üzerinde kısa bir şema kilidi alınır.
+
+> Ayrıntı: SQL Server, `ALTER PROCEDURE …` gönderildiğinde tanımı `CREATE PROCEDURE …` olarak saklar (+1 karakter).
+> Bu yüzden XOR'un bilinen-düz-metni `CREATE` biçimidir; gönderilen ifade `ALTER`'dır.
+>
+> Doğrulandı (2026-10-18): `dbo.sip_sevkisle` ve `dbo.irs_sevkEkle` canlı DAC ile çözüldü, eldeki referans
+> çözümlerle birebir eşleşti (tek fark dbForge'un eklediği sondaki `GO` ayırıcısı).
+
+**Gereksinimler / çıkış:** `sysadmin` yetkisi + uzak DAC açık (`sp_configure 'remote admin connections', 1`). DAC tek
+oturuma izin verir. DAC açılamazsa komut **neyin gerektiğini açıkça söyler** ve exit 2 verir. Çözme hatasında (hiç nesne
+çözülemediyse) exit 1.
+
 ### ETL — `copy` (SQL Server → SQL Server, SqlBulkCopy)
 
 ```bash

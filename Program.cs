@@ -63,6 +63,7 @@ if (Environment.GetEnvironmentVariable("DOTNET_hostBuilder__reloadConfigOnChange
 var builder = CoconaApp.CreateBuilder(args);
 var app = builder.Build();
 app.AddCommands<SchemaCommands>();
+app.AddCommands<DecryptCommands>();
 app.AddCommands<QueryCommands>();
 app.AddCommands<IntrospectCommands>();
 app.AddCommands<PerfCommands>();
