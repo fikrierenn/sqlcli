@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.5.0)
+# sqlcli — ölçümün eli (v2.6.0)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.5.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.6.0 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -209,16 +209,17 @@ sqlcli --profile bkm rows
 | `search <pattern> [--scope=tables\|columns\|both]` | Tablo/kolon adı arama (LIKE wildcard, `*` → `%`) |
 | `relationships <table>` / `rel <table>` | Gelen + giden FK'lar |
 
-### decrypt — `WITH ENCRYPTION` çözme (SQL Server, DAC gerektirir)
+### ddl — nesne tanımını göster (şifreliyse çöz)
 
-dbForge SQL Decryptor benzeri: `WITH ENCRYPTION` ile şifrelenmiş **SP / view / function / trigger** tanımını çözer.
+Bir SP / view / function / trigger'ın **tanımını** verir. Nesne `WITH ENCRYPTION` ise DAC + XOR ile **çözer**
+(dbForge SQL Decryptor benzeri); şifreli değilse düz tanımı (`sys.sql_modules`) doğrudan verir. Tek komut, iki durum.
 
 ```bash
 # Tek nesne — tanım stdout'a (dosyaya yönlendirmek için > kullan)
-sqlcli decrypt --profile erp "dbo.sip_sevkisle" > dbo.sip_sevkisle.sql
+sqlcli ddl --profile erp "dbo.sip_sevkisle" > dbo.sip_sevkisle.sql
 
 # Toplu — her nesne klasöre şema.ad.sql olarak
-sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp
+sqlcli ddl --profile erp --like "%sevk%" --out cozulmus-sp
 ```
 
 | Bayrak | Anlamı |
@@ -228,14 +229,13 @@ sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp
 | `--out <klasör>` | Her nesneyi `şema.ad.sql` olarak yazar (UTF-8). Verilmezse stdout. |
 | `--dac-port <n>` | DAC TCP portu (ör. `1434`). Verilmezse SQL Browser çözer. |
 | `--dac-server <ad>` | DAC sunucu adını tamamen override et (`admin:` öneki otomatik). |
-| `--enable-dac` | Uzak DAC kapalıysa **geçici aç**, iş bitince **eski haline (0) geri al**. Sysadmin gerekir. |
+| `--no-auto-dac` | Şifreli nesnede uzak DAC kapalıysa **otomatik açma** (varsayılan açar, iş bitince eski haline alır). Yalnız dener. |
 | `--overwrite` | `--out` ile var olan dosyanın üzerine yaz. |
 | `--dry-run` | Hedefi **ALTER etme**; yalnız uzunluk + planı bildir. |
 
-Uzak DAC kapalıysa (RDSTEST'te varsayılan) tek komutla:
-```bash
-sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp --enable-dac
-```
+Şifresiz nesne için DAC'a **hiç gerek yok** — tanım doğrudan gelir. Şifreli nesnede uzak DAC kapalıysa
+(RDSTEST'te varsayılan) **ekstra bir şey gerekmez**: komut kendisi geçici açar, iş bitince eski haline (0) alır
+(sysadmin gerekir).
 
 **Nasıl çalışır (güvenlik):** Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içindedir ve yalnız **DAC
 (Dedicated Admin Connection)** üzerinden okunur — bağlantı `admin:` önekiyle açılır. Çözme, bilinen-düz-metin
@@ -250,9 +250,10 @@ döndürülür. Hedef **kalıcı olarak asla değişmez**; yazma yalnız geri al
 > Doğrulandı (2026-10-18): `dbo.sip_sevkisle` ve `dbo.irs_sevkEkle` canlı DAC ile çözüldü, eldeki referans
 > çözümlerle birebir eşleşti (tek fark dbForge'un eklediği sondaki `GO` ayırıcısı).
 
-**Gereksinimler / çıkış:** `sysadmin` yetkisi + uzak DAC açık (`sp_configure 'remote admin connections', 1`). DAC tek
-oturuma izin verir. DAC açılamazsa komut **neyin gerektiğini açıkça söyler** ve exit 2 verir. Çözme hatasında (hiç nesne
-çözülemediyse) exit 1.
+**Gereksinimler / çıkış:** `sysadmin` yetkisi. Uzak DAC kapalıysa komut **varsayılan olarak otomatik açar**
+(`sp_configure 'remote admin connections', 1`) ve iş bitince **eski haline (0) geri alır** — `--no-auto-dac` ile
+kapatılır. DAC tek oturuma izin verir. Otomatik açma kapalıyken DAC açılamazsa komut **neyin gerektiğini açıkça
+söyler** ve exit 2 verir. Çözme hatasında (hiç nesne çözülemediyse) exit 1.
 
 ### ETL — `copy` (SQL Server → SQL Server, SqlBulkCopy)
 
@@ -334,10 +335,14 @@ sqlcli relationships ReportCatalog
 
 ## Sürüm Notları
 
-### v2.5 (2026-10-18) — `decrypt` (WITH ENCRYPTION çözme)
-- `decrypt` komutu: şifreli SP/view/function/trigger tanımını **DAC + bilinen-düz-metin XOR** ile çözer (dbForge SQL Decryptor benzeri). Tek nesne ya da `--like` ile toplu; `--out` ile her nesne `şema.ad.sql`.
+### v2.6 (2026-10-18) — `ddl` (nesne tanımı göster; şifreliyse çöz)
+- Komut **`ddl`** olarak adlandırıldı (eski `decrypt`): tek komut hem şifresiz tanımı doğrudan verir hem de `WITH ENCRYPTION` olanı DAC + XOR ile çözer.
+- Şifreli nesnede uzak DAC kapalıysa **kendisi açar** (önce normal dener; açılamazsa `remote admin connections=1`, RECONFIGURE, yeniden dener) ve iş bitince **eski haline (0) geri alır**. `--no-auto-dac` ile kapatılır.
+- Not: Cocona, birden çok komut varken argüman alan komutsuz (primary) kullanıma izin vermez; bu yüzden kısa komut adı `ddl` zorunlu (`sqlcli ddl --profile …`).
+
+### v2.5 (2026-10-18) — şifre çözme (ilk sürüm, 2.6'da `ddl` olarak yeniden adlandırıldı)
+- Şifreli SP/view/function/trigger tanımını **DAC + bilinen-düz-metin XOR** ile çözme (dbForge SQL Decryptor benzeri). Tek nesne ya da `--like` ile toplu; `--out` ile her nesne `şema.ad.sql`.
 - Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içinde ve yalnız **DAC** ile okunur (`admin:` öneki). Anahtar akışı nesnenin objid'ine bağlı olduğundan hedef **tek transaction** içinde kukla metne `ALTER` edilir, okunur ve **`ROLLBACK`** ile geri alınır — hedef kalıcı değişmez.
-- `--enable-dac`: uzak DAC kapalıysa geçici açar, iş bitince **eski haline (0)** geri alır (sysadmin gerekir).
 - Kök ayrıntı: SQL Server `ALTER`'ı `CREATE` olarak saklar (+1 karakter); XOR'un bilinen-düz-metni `CREATE` biçimidir. Canlı DAC ile `dbo.sip_sevkisle` + `dbo.irs_sevkEkle` referansla birebir doğrulandı. 16 birim testi (`DecryptTests`).
 
 ### v2.4 (2026-10-09) — `copy` sertleştirmesi (FIFO plan 001 S paketi)

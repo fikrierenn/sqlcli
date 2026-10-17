@@ -24,17 +24,17 @@ public class DecryptCommands
         public string FileBase => $"{Schema}.{Name}";
     }
 
-    [Command("decrypt", Description = "WITH ENCRYPTION şifreli SP/view/function/trigger tanımını çözer (DAC gerektirir)")]
-    public async Task Decrypt(
+    [Command("ddl", Description = "Nesne tanımını gösterir: şifreli (WITH ENCRYPTION) ise DAC ile çözer, değilse düz tanımı verir")]
+    public async Task Ddl(
         [Argument(Description = "Nesne adı (şema.ad veya ad). --like verilirse boş bırakılabilir.")] string? name = null,
         [Option("conn", Description = "Bağlantı string'i (override)")] string? conn = null,
         [Option("profile", Description = "sqlcli.json > Profiles içinden profil adı")] string? profile = null,
-        [Option("like", Description = "Toplu: ada göre LIKE deseni (ör. %sevk%). Yalnız şifreli nesneler.")] string? like = null,
+        [Option("like", Description = "Toplu: ada göre LIKE deseni (ör. %sevk%).")] string? like = null,
         [Option("out", Description = "Çıktı klasörü — her nesne şema.ad.sql olarak yazılır")] string? outDir = null,
         [Option("dac-port", Description = "DAC TCP portu (ör. 1434). Verilmezse SQL Browser çözer.")] int? dacPort = null,
         [Option("dac-server", Description = "DAC sunucu adını tamamen override et (admin: öneki otomatik eklenir)")] string? dacServer = null,
         [Option("overwrite", Description = "--out ile var olan dosyaların üzerine yaz")] bool overwrite = false,
-        [Option("enable-dac", Description = "Uzak DAC kapalıysa geçici aç, iş bitince ESKİ HALİNE geri al (sysadmin gerekir)")] bool enableDac = false,
+        [Option("no-auto-dac", Description = "Şifreli nesnede DAC kapalıysa OTOMATİK açma (varsayılan açar). Yalnız dener.")] bool noAutoDac = false,
         [Option("dry-run", Description = "Hedefi ALTER etme; yalnız hedef uzunluğunu ve planı bildir")] bool dryRun = false)
     {
         if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(like))
@@ -51,20 +51,47 @@ public class DecryptCommands
         Info($"[grey]Profil:[/] {Markup.Escape(resolved.ProfileName ?? "default")}  " +
              $"[grey]DAC:[/] {Markup.Escape(MaskDac(dacConnStr))}");
 
-        // --enable-dac: uzak DAC kapalıysa geçici aç; iş bitince (finally) ESKİ HALİNE al.
+        // DAC bağlantısı. Varsayılan: önce olduğu gibi dene; açılamazsa (muhtemelen kapalı)
+        // OTOMATİK olarak uzak DAC'ı aç, yeniden dene ve iş bitince (finally) ESKİ HALİNE al.
+        // --no-auto-dac ile bu otomatik açma kapatılır (yalnız dener).
+        bool autoDac = !noAutoDac;
         bool dacGeciciAcildi = false;
-        if (enableDac) dacGeciciAcildi = await EnsureRemoteDacAsync(resolved.Effective);
 
         try
         {
         await using var dac = new SqlConnection(dacConnStr);
         try
         {
-            await OpenDacWithRetryAsync(dac, enableDac);
+            await dac.OpenAsync();
         }
-        catch (SqlException ex)
+        catch (SqlException ilkHata)
         {
-            throw new CommandExitedException(DacHata(ex), 2);
+            // DAC açılamadı. Otomatik açma kapalıysa ya da set'i açmak derde deva olmazsa: net hata.
+            bool acabildik = false;
+            if (autoDac)
+            {
+                try { dacGeciciAcildi = await EnsureRemoteDacAsync(resolved.Effective); }
+                catch (Exception acHata)
+                {
+                    throw new CommandExitedException(
+                        DacHata(ilkHata) + $"\n  (otomatik açma da başarısız: {acHata.Message})", 2);
+                }
+                acabildik = dacGeciciAcildi;
+            }
+
+            if (!acabildik)
+                // Ya auto kapalı, ya da uzak DAC zaten AÇIKtı (başka bir sorun var: firewall/yetki).
+                throw new CommandExitedException(DacHata(ilkHata), 2);
+
+            // Setti biz açtık — DAC dinleyicisi hazır olana dek yeniden deneyerek aç.
+            try
+            {
+                await OpenDacWithRetryAsync(dac, enableDac: true);
+            }
+            catch (SqlException ex2)
+            {
+                throw new CommandExitedException(DacHata(ex2), 2);
+            }
         }
 
         // Hedef listesi
