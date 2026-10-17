@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.4.0)
+# sqlcli — ölçümün eli (v2.5.0)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.4.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.5.0 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -228,8 +228,14 @@ sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp
 | `--out <klasör>` | Her nesneyi `şema.ad.sql` olarak yazar (UTF-8). Verilmezse stdout. |
 | `--dac-port <n>` | DAC TCP portu (ör. `1434`). Verilmezse SQL Browser çözer. |
 | `--dac-server <ad>` | DAC sunucu adını tamamen override et (`admin:` öneki otomatik). |
+| `--enable-dac` | Uzak DAC kapalıysa **geçici aç**, iş bitince **eski haline (0) geri al**. Sysadmin gerekir. |
 | `--overwrite` | `--out` ile var olan dosyanın üzerine yaz. |
 | `--dry-run` | Hedefi **ALTER etme**; yalnız uzunluk + planı bildir. |
+
+Uzak DAC kapalıysa (RDSTEST'te varsayılan) tek komutla:
+```bash
+sqlcli decrypt --profile erp --like "%sevk%" --out cozulmus-sp --enable-dac
+```
 
 **Nasıl çalışır (güvenlik):** Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içindedir ve yalnız **DAC
 (Dedicated Admin Connection)** üzerinden okunur — bağlantı `admin:` önekiyle açılır. Çözme, bilinen-düz-metin
@@ -327,6 +333,12 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.5 (2026-10-18) — `decrypt` (WITH ENCRYPTION çözme)
+- `decrypt` komutu: şifreli SP/view/function/trigger tanımını **DAC + bilinen-düz-metin XOR** ile çözer (dbForge SQL Decryptor benzeri). Tek nesne ya da `--like` ile toplu; `--out` ile her nesne `şema.ad.sql`.
+- Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içinde ve yalnız **DAC** ile okunur (`admin:` öneki). Anahtar akışı nesnenin objid'ine bağlı olduğundan hedef **tek transaction** içinde kukla metne `ALTER` edilir, okunur ve **`ROLLBACK`** ile geri alınır — hedef kalıcı değişmez.
+- `--enable-dac`: uzak DAC kapalıysa geçici açar, iş bitince **eski haline (0)** geri alır (sysadmin gerekir).
+- Kök ayrıntı: SQL Server `ALTER`'ı `CREATE` olarak saklar (+1 karakter); XOR'un bilinen-düz-metni `CREATE` biçimidir. Canlı DAC ile `dbo.sip_sevkisle` + `dbo.irs_sevkEkle` referansla birebir doğrulandı. 16 birim testi (`DecryptTests`).
 
 ### v2.4 (2026-10-09) — `copy` sertleştirmesi (FIFO plan 001 S paketi)
 - `--read-only` **varsayılan açık**; `--param`; `--check-constraints` / `--fire-triggers`; `--atomic`; `--format json`.

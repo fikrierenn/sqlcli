@@ -34,6 +34,7 @@ public class DecryptCommands
         [Option("dac-port", Description = "DAC TCP portu (ör. 1434). Verilmezse SQL Browser çözer.")] int? dacPort = null,
         [Option("dac-server", Description = "DAC sunucu adını tamamen override et (admin: öneki otomatik eklenir)")] string? dacServer = null,
         [Option("overwrite", Description = "--out ile var olan dosyaların üzerine yaz")] bool overwrite = false,
+        [Option("enable-dac", Description = "Uzak DAC kapalıysa geçici aç, iş bitince ESKİ HALİNE geri al (sysadmin gerekir)")] bool enableDac = false,
         [Option("dry-run", Description = "Hedefi ALTER etme; yalnız hedef uzunluğunu ve planı bildir")] bool dryRun = false)
     {
         if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(like))
@@ -50,10 +51,16 @@ public class DecryptCommands
         Info($"[grey]Profil:[/] {Markup.Escape(resolved.ProfileName ?? "default")}  " +
              $"[grey]DAC:[/] {Markup.Escape(MaskDac(dacConnStr))}");
 
+        // --enable-dac: uzak DAC kapalıysa geçici aç; iş bitince (finally) ESKİ HALİNE al.
+        bool dacGeciciAcildi = false;
+        if (enableDac) dacGeciciAcildi = await EnsureRemoteDacAsync(resolved.Effective);
+
+        try
+        {
         await using var dac = new SqlConnection(dacConnStr);
         try
         {
-            await dac.OpenAsync();
+            await OpenDacWithRetryAsync(dac, enableDac);
         }
         catch (SqlException ex)
         {
@@ -136,6 +143,75 @@ public class DecryptCommands
 
         Info($"\n[grey]Bitti — çözüldü:{ok} atlandı:{atlanan} hata:{hata}[/]");
         if (hata > 0 && ok == 0) throw new CommandExitedException(1);
+        }
+        finally
+        {
+            if (dacGeciciAcildi) await TryDisableRemoteDacAsync(resolved.Effective);
+        }
+    }
+
+    // ─── Uzak DAC aç/kapat (--enable-dac) ────────────────────────────────
+
+    // Uzak DAC kapalıysa açar; döndürdüğü true = BİZ açtık, geri alınmalı.
+    private static async Task<bool> EnsureRemoteDacAsync(string normalConnStr)
+    {
+        await using var c = new SqlConnection(ConnectionResolver.ExpandEnv(normalConnStr));
+        await c.OpenAsync();
+        var cur = Convert.ToInt32(await ScalarAsync(c,
+            "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'remote admin connections'"));
+        if (cur == 1)
+        {
+            Info("[grey]remote DAC zaten açık — dokunulmayacak.[/]");
+            return false;
+        }
+        await ExecAsync(c, "EXEC sp_configure 'remote admin connections', 1; RECONFIGURE;");
+        Info("[yellow]remote DAC geçici açıldı[/] [grey](iş bitince eski haline alınacak).[/]");
+        return true;
+    }
+
+    private static async Task TryDisableRemoteDacAsync(string normalConnStr)
+    {
+        try
+        {
+            await using var c = new SqlConnection(ConnectionResolver.ExpandEnv(normalConnStr));
+            await c.OpenAsync();
+            await ExecAsync(c, "EXEC sp_configure 'remote admin connections', 0; RECONFIGURE;");
+            Info("[grey]remote DAC eski haline (0) alındı.[/]");
+        }
+        catch (Exception ex)
+        {
+            Info($"[red]UYARI:[/] remote DAC geri alınamadı: {Markup.Escape(ex.Message)} — elle kapatın: " +
+                 "EXEC sp_configure 'remote admin connections', 0; RECONFIGURE;");
+        }
+    }
+
+    // RECONFIGURE sonrası DAC dinleyicisi hazır olana dek kısa yeniden deneme.
+    private static async Task OpenDacWithRetryAsync(SqlConnection dac, bool enableDac)
+    {
+        var deneme = enableDac ? 4 : 1;
+        for (int i = 1; ; i++)
+        {
+            try { await dac.OpenAsync(); return; }
+            catch (SqlException) when (i < deneme)
+            {
+                if (dac.State != System.Data.ConnectionState.Closed) { try { await dac.CloseAsync(); } catch { } }
+                await Task.Delay(1000);
+            }
+        }
+    }
+
+    private static async Task<object?> ScalarAsync(SqlConnection c, string sql)
+    {
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+        return await cmd.ExecuteScalarAsync();
+    }
+
+    private static async Task ExecAsync(SqlConnection c, string sql)
+    {
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync();
     }
 
     // ─── Çözme çekirdeği (DB I/O) ────────────────────────────────────────
