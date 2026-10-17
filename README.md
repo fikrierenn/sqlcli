@@ -125,19 +125,39 @@ düzeyine taşır. `lookup` ise "kod listesi elle yazılmaz, lookup tablosundan 
 kuralının aracıdır — ölçülen vaka: 20 kod belgelenmişti, lookup'ta 34 vardı ve
 belgelenmeyenlerden biri 364.226 satırlık bir hareket tipiydi.
 
-## Kurulum
+## Kurulum ve dağıtım
 
+Dağıtım **GitHub Releases** ile: her sürümün `.nupkg` paketi
+[Releases](https://github.com/fikrierenn/sqlcli/releases) sayfasına eklenir.
+
+### Kurulum / güncelleme (kullanıcı)
+1. En son release'ten `SqlCli.<sürüm>.nupkg` dosyasını bir klasöre indir (ör. `%USERPROFILE%\Downloads`).
+2. Kur veya güncelle (ikisi de aynı komut):
+   ```bash
+   dotnet tool update -g --add-source "%USERPROFILE%\Downloads" SqlCli
+   ```
+3. Doğrula: `sqlcli surum`
+
+Çalıştırmak için **.NET 10 runtime** yeterli (SDK gerekmez — derlenmiş paket kurulur).
+Eski bir kopya çalışırsa `VersionGuard` kırmızı hata + güncelleme komutu verir.
+
+### Geliştirme (kaynaktan)
 ```bash
-cd D:/Dev/sqlcli
-dotnet pack
-dotnet tool install -g --add-source ./nupkg SqlCli
+cd C:/dev/sqlcli
+dotnet run -- <komut> [args]          # doğrudan çalıştır
+# ya da yerel kur:
+dotnet pack -c Release -o ./nupkg
+dotnet tool update -g --add-source ./nupkg SqlCli
 ```
 
-Veya geliştirirken doğrudan:
-```bash
-cd D:/Dev/sqlcli
-dotnet run -- <komut> [args]
-```
+### Yeni sürüm yayınlama (bakımcı)
+1. `sqlcli.csproj` içinde `<Version>` artır, README sürüm notu ekle; commit + push.
+2. `dotnet pack -c Release -o ./nupkg`
+3. GitHub release oluştur (nupkg ekli):
+   ```bash
+   gh release create v<sürüm> ./nupkg/SqlCli.<sürüm>.nupkg --title "v<sürüm>" --notes "<değişiklikler>"
+   ```
+   (`gh` ilk kez: `gh auth login`.)
 
 ## Bağlantı Yapılandırması
 
