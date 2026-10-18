@@ -11,9 +11,12 @@ namespace SqlCli.Core;
 /// (--read-only izin listesi vb.) devrede değilmiş gibi görünmeden devre dışı kalır;
 /// "ölçtüm" dediğimiz sonuç eski kodla ölçülmüş olur.
 ///
+/// SÜRÜM ARTIK GIT TAG'İNDEN gelir (MinVer, `v*` tag → paket sürümü); csproj'ta elle &lt;Version&gt; YOK.
+///
 /// "EN GÜNCEL" ŞU KAYNAKLARIN EN BÜYÜĞÜDÜR (hepsi yerel, ağ yok):
-///   1. ~/.dotnet/tools/.store/sqlcli/&lt;sürüm&gt; — kurulu global tool sürüm(ler)i
-///   2. SQLCLI_SOURCE env → &lt;dizin&gt;/sqlcli.csproj içindeki &lt;Version&gt; (kanonik kaynak)
+///   1. ~/.dotnet/tools/.store/sqlcli/&lt;sürüm&gt; — kurulu global tool sürüm(ler)i (ASIL kontrol)
+///   2. SQLCLI_SOURCE env → &lt;dizin&gt;/sqlcli.csproj içindeki &lt;Version&gt; (ARTIK YOK: MinVer'e
+///      geçişle csproj'ta sabit sürüm bulunmaz; bu kaynak sessizce atlanır — kurulu-store kontrolü yeterli)
 ///
 /// "Makinede çalışmış en yüksek sürüm" işaret dosyası BİLEREK YOK: kurulmamış bir
 /// Debug/geçici derlemenin tek bir çalıştırılışı işareti yükseltir ve ardından kurulu

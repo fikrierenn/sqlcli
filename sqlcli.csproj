@@ -13,7 +13,8 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>sqlcli</ToolCommandName>
     <PackageId>SqlCli</PackageId>
-    <Version>2.6.0</Version>
+    <!-- Sürüm git tag'inden gelir (MinVer): `v*` en son tag = paket sürümü. Elle <Version> YOK. -->
+    <MinVerTagPrefix>v</MinVerTagPrefix>
     <Description>Çok-sağlayıcı (SQL Server + PostgreSQL) yönetim + keşif + migration CLI. Multi-profile connection, describe/search/relationships, query history, performance diagnostics, cross-provider export/import/diff. Oracle için dialect seam hazır. v2.2: assert (koşulabilir veri denetimi, exit 1), lookup (kod tablosu → YAML/JSON), --read-only muhafızı, adlı parametre, zaman aşımı + geçici hata retry, bağlantı string'inde ${ENV} genişletmesi. v2.3: sürüm muhafızı (eski kopya çalışırsa hata + güncelle). v2.4: copy — --read-only varsayılan açık, --param, --check-constraints, --fire-triggers, --atomic, --format json (aktarılan satır, süre, kaynak/hedef sunucu+db). v2.6: ddl — nesne tanımını gösterir; şifresizse düz verir, WITH ENCRYPTION ise DAC + bilinen-düz-metin XOR ile çözer (--like toplu, --out, --dry-run). Şifreli nesnede uzak DAC kapalıysa OTOMATİK açar ve iş bitince eski haline alır (--no-auto-dac ile kapatılır). Spectre.Console UX + Cocona CLI framework.</Description>
   </PropertyGroup>
 
@@ -34,6 +35,8 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.0" />
     <PackageReference Include="Spectre.Console" Version="0.49.1" />
     <PackageReference Include="Spectre.Console.Json" Version="0.49.1" />
+    <!-- git tag → sürüm (derleme-zamanı; pakete girmez) -->
+    <PackageReference Include="MinVer" Version="6.0.0" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

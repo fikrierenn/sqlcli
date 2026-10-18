@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.6.0)
+# sqlcli — ölçümün eli (v2.6.1)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.6.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.6.1 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -151,13 +151,17 @@ dotnet tool update -g --add-source ./nupkg SqlCli
 ```
 
 ### Yeni sürüm yayınlama (bakımcı)
-1. `sqlcli.csproj` içinde `<Version>` artır, README sürüm notu ekle; commit + push.
-2. `dotnet pack -c Release -o ./nupkg`
-3. GitHub release oluştur (nupkg ekli):
+Sürüm **git tag'inden** gelir (MinVer) — csproj'ta elle sürüm yok. Akış:
+1. README sürüm notu ekle; commit + push.
+2. Tag at ve it: `git tag v<sürüm> && git push origin v<sürüm>`  (tag = paket sürümü).
+3. Paketle: `dotnet pack -c Release -o ./nupkg`  → `SqlCli.<sürüm>.nupkg` (tag'den otomatik).
+4. GitHub release (nupkg ekli):
    ```bash
    gh release create v<sürüm> ./nupkg/SqlCli.<sürüm>.nupkg --title "v<sürüm>" --notes "<değişiklikler>"
    ```
    (`gh` ilk kez: `gh auth login`.)
+
+Tag'siz ara commit'ler ön-sürüm üretir (`<sürüm>-alpha.0.N`) — "henüz yayınlanmadı" demektir.
 
 ## Bağlantı Yapılandırması
 
@@ -354,6 +358,9 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.6.1 (2026-10-18) — git-tag sürümleme (MinVer)
+- Sürüm artık **git tag'inden** türetiliyor (MinVer, `v*` prefix). csproj'tan elle `<Version>` kaldırıldı; yayın akışı: tag at → `dotnet pack` → release. `VersionGuard`'ın `SQLCLI_SOURCE` csproj kontrolü (artık sürüm orada yok) devre dışı; asıl kurulu-store kontrolü sürüyor.
 
 ### v2.6 (2026-10-18) — `ddl` (nesne tanımı göster; şifreliyse çöz)
 - Komut **`ddl`** olarak adlandırıldı (eski `decrypt`): tek komut hem şifresiz tanımı doğrudan verir hem de `WITH ENCRYPTION` olanı DAC + XOR ile çözer.
