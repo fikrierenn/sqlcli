@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.6.1)
+# sqlcli — ölçümün eli (v2.6.2)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.6.1 · .NET 10 · global araç adı `sqlcli`.*
+*v2.6.2 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -358,6 +358,9 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.6.2 (2026-11-01) — güvenlik: System.Security.Cryptography.Pkcs 9.0.21
+- Geçişli `System.Security.Cryptography.Pkcs` 9.0.0 (Microsoft.Data.SqlClient → System.Configuration.ConfigurationManager üzerinden) bilinen açıklar taşıyordu (GHSA-846f-f764-76mx yüksek, GHSA-2fmv-rv2c-59x7 orta). csproj'a açık `PackageReference` ile yamalı **9.0.21** sabitlendi; başka yükseltme yok. Sürüm tag'i (`v2.6.2`) merge sonrası atılır.
 
 ### v2.6.1 (2026-10-18) — git-tag sürümleme (MinVer)
 - Sürüm artık **git tag'inden** türetiliyor (MinVer, `v*` prefix). csproj'tan elle `<Version>` kaldırıldı; yayın akışı: tag at → `dotnet pack` → release. `VersionGuard`'ın `SQLCLI_SOURCE` csproj kontrolü (artık sürüm orada yok) devre dışı; asıl kurulu-store kontrolü sürüyor.
