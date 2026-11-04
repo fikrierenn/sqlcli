@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.7.0)
+# sqlcli — ölçümün eli (v2.7.1)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.7.0 · .NET 10 · global araç adı `sqlcli`.*
+*v2.7.1 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -392,7 +392,7 @@ sqlcli relationships ReportCatalog
 
 ## Sürüm Notları
 
-### v2.7.0 (2026-11-05) — PostgreSQL perf komutları + `copy`
+### v2.7.1 (2026-11-05) — PostgreSQL perf komutları + `copy`
 - `explain` / `active-sessions` / `slow-queries` / `kill` PostgreSQL'de çalışır; SQL `ISqlDialect`'e taşındı (`ActiveSessionsSql`, `SlowQueriesSql`, `KillSql`, `ExplainAsync`) — komutlarda sağlayıcı dalı yok, SQL Server SQL'i aynen korundu.
 - `explain --analyze` (PG): `EXPLAIN (ANALYZE, BUFFERS)`, opt-in; her çalıştırma transaction'da, sonunda ROLLBACK. `--format text|json`.
 - `kill --terminate` (PG): `pg_terminate_backend`; varsayılan `pg_cancel_backend`.
