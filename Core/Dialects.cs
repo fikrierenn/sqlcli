@@ -11,11 +11,13 @@ namespace SqlCli.Core;
 // Oracle: yeni bir ISqlDialect impl'i ekle (katalog=ALL_TABLES/USER_TAB_COLUMNS, sayfalama=FETCH FIRST) — seam hazır.
 public enum DbProvider { SqlServer, Postgres }
 
+public sealed record ExplainResult(string Label, IReadOnlyList<string> Plans, string? Note = null);
+
 public interface ISqlDialect
 {
     DbProvider Provider { get; }
     string Name { get; }
-    bool SupportsPerf { get; }   // DMV/explain/kill/copy (şimdilik yalnız SQL Server)
+    bool SupportsPerf { get; }   // explain/active-sessions/slow-queries/kill (copy ayrı: yalnız SQL Server)
 
     DbConnection Create(string connStr);
     Task InitAsync(DbConnection conn);
@@ -43,6 +45,19 @@ public interface ISqlDialect
     string RowCountSql(string schema, string name);
     string RelOutgoingSql(string schema, string name);
     string RelIncomingSql(string schema, string name);
+
+    // Perf / tanılama
+    string ActiveSessionsSql { get; }
+    string SlowQueriesSql(int top, string by);
+    /// <summary>slow-queries'in ön koşulunu denetleyen skaler sorgu (true = hazır); gerekmiyorsa null.</summary>
+    string? SlowQueriesPrecheckSql { get; }
+    string SlowQueriesPrecheckMessage { get; }
+    /// <summary>slow-queries çalışırken gelen hata için kullanıcıya yardımcı mesaj; tanınmıyorsa null.</summary>
+    string? SlowQueriesErrorHint(DbException ex);
+    /// <param name="hard">true: oturumu sonlandır (PG: pg_terminate_backend); false: yalnız çalışan sorguyu iptal et (PG: pg_cancel_backend). SQL Server her zaman KILL.</param>
+    string KillSql(int sessionId, bool hard);
+    /// <summary>Plan üretir. actual=true sorguyu GERÇEKTEN çalıştırır (PG: ANALYZE; değişiklikler geri alınır).</summary>
+    Task<ExplainResult> ExplainAsync(DbConnection conn, string sql, bool actual, string? format);
 
     static ISqlDialect Detect(string connStr)
     {
@@ -242,6 +257,111 @@ public sealed class SqlServerDialect : ISqlDialect
         WHERE fk.referenced_object_id = OBJECT_ID('{Esc(schema)}.{Esc(name)}')
         ORDER BY tp.name, fk.name";
 
+    public string ActiveSessionsSql => @"
+        SELECT
+            s.session_id AS SessionId,
+            s.login_name AS Kullanici,
+            s.host_name AS Host,
+            s.program_name AS Program,
+            s.status AS Durum,
+            r.command AS Komut,
+            r.wait_type AS WaitType,
+            r.blocking_session_id AS BlokeEden,
+            r.cpu_time AS CpuMs,
+            r.total_elapsed_time AS GecenMs,
+            DB_NAME(r.database_id) AS Veritabani,
+            SUBSTRING(t.text, COALESCE(r.statement_start_offset, 0)/2 + 1,
+                (CASE WHEN r.statement_end_offset = -1 THEN LEN(CONVERT(NVARCHAR(MAX), t.text)) * 2
+                      ELSE r.statement_end_offset END - COALESCE(r.statement_start_offset, 0))/2 + 1) AS Sorgu
+        FROM sys.dm_exec_sessions s
+        LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
+        OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+        WHERE s.is_user_process = 1 AND s.session_id <> @@SPID
+        ORDER BY r.blocking_session_id DESC, r.cpu_time DESC";
+
+    public string SlowQueriesSql(int top, string by)
+    {
+        var orderBy = by.ToLowerInvariant() switch
+        {
+            "total" => "qs.total_elapsed_time",
+            "cpu" => "qs.total_worker_time",
+            "reads" => "qs.total_logical_reads",
+            "executions" => "qs.execution_count",
+            "avg" => "qs.total_elapsed_time / qs.execution_count",
+            _ => throw new ArgumentException($"--by yalnız avg|total|cpu|reads|executions olabilir: '{by}'")
+        };
+        return $@"
+            SELECT TOP {top}
+                qs.execution_count AS Calistirma,
+                qs.total_elapsed_time / 1000 AS ToplamMs,
+                (qs.total_elapsed_time / qs.execution_count) / 1000 AS OrtalamaMs,
+                qs.total_worker_time / 1000 AS CpuMs,
+                qs.total_logical_reads AS MantiksalOkuma,
+                qs.last_execution_time AS SonCalistirma,
+                SUBSTRING(qt.text, qs.statement_start_offset/2 + 1,
+                    (CASE WHEN qs.statement_end_offset = -1
+                          THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2
+                          ELSE qs.statement_end_offset END - qs.statement_start_offset)/2 + 1) AS Sorgu
+            FROM sys.dm_exec_query_stats qs
+            CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
+            WHERE qt.dbid = DB_ID()
+            ORDER BY {orderBy} DESC";
+    }
+
+    public string? SlowQueriesPrecheckSql => null;
+    public string SlowQueriesPrecheckMessage => "";
+    public string? SlowQueriesErrorHint(DbException ex) => null;
+
+    public string KillSql(int sessionId, bool hard) => $"KILL {sessionId}";
+
+    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
+    {
+        // Paritesi: PG'nin text/json planı SQL Server'da yok → sessizce yok sayma, net hata.
+        if (!string.IsNullOrEmpty(format) && !format.Equals("xml", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"SQL Server planı yalnız XML üretir; --format '{format}' desteklenmez (xml ya da hiç verme).");
+
+        var setStmt = actual ? "SET STATISTICS XML ON;" : "SET SHOWPLAN_XML ON;";
+        var unsetStmt = actual ? "SET STATISTICS XML OFF;" : "SET SHOWPLAN_XML OFF;";
+        var plans = new List<string>();
+
+        // actual: sorgu GERÇEKTEN çalışır → PG'deki gibi transaction içinde, sonunda ROLLBACK
+        // (INSERT/UPDATE/DELETE plan alındıktan sonra geri alınır). Tahmini planda çalıştırma yok.
+        DbTransaction? tx = actual ? await c.BeginTransactionAsync() : null;
+        try
+        {
+            using var setCmd = c.CreateCommand();
+            setCmd.Transaction = tx;
+            setCmd.CommandText = setStmt;
+            await setCmd.ExecuteNonQueryAsync();
+
+            using var qCmd = c.CreateCommand();
+            qCmd.Transaction = tx;
+            qCmd.CommandText = sql;
+            await using var reader = await qCmd.ExecuteReaderAsync();
+
+            // Plan XML çoğunlukla son result set'te
+            do
+            {
+                while (await reader.ReadAsync())
+                {
+                    var val = reader[0]?.ToString();
+                    if (!string.IsNullOrEmpty(val) && val.Contains("ShowPlanXML", StringComparison.OrdinalIgnoreCase))
+                        plans.Add(val);
+                }
+            } while (await reader.NextResultAsync());
+        }
+        finally
+        {
+            using var unsetCmd = c.CreateCommand();
+            unsetCmd.Transaction = tx;
+            unsetCmd.CommandText = unsetStmt;
+            await unsetCmd.ExecuteNonQueryAsync();
+            if (tx != null) { await tx.RollbackAsync(); await tx.DisposeAsync(); }
+        }
+        var label = actual ? "Execution Plan (XML, actual — değişiklikler geri alındı)" : "Execution Plan (XML, tahmini)";
+        return new ExplainResult(label, plans);
+    }
+
     private static string Esc(string s) => s.Replace("'", "''");
 }
 
@@ -250,7 +370,7 @@ public sealed class PostgresDialect : ISqlDialect
 {
     public DbProvider Provider => DbProvider.Postgres;
     public string Name => "PostgreSQL";
-    public bool SupportsPerf => false;   // DMV/explain/kill/copy şimdilik SQL Server'a özel
+    public bool SupportsPerf => true;
 
     // İdempotent SQLSTATE'ler: duplicate_table/object/column/schema/function, unique_violation.
     private static readonly HashSet<string> WarnStates = new()
@@ -389,6 +509,102 @@ public sealed class PostgresDialect : ISqlDialect
         WHERE tc.constraint_type = 'FOREIGN KEY'
           AND ccu.table_schema = '{Esc(schema)}' AND ccu.table_name = '{Esc(name)}'
         ORDER BY tc.table_name, tc.constraint_name";
+
+    public string ActiveSessionsSql => @"
+        SELECT
+            a.pid AS ""SessionId"",
+            a.usename AS ""Kullanici"",
+            a.client_addr::text AS ""Host"",
+            a.application_name AS ""Program"",
+            a.state AS ""Durum"",
+            upper(split_part(ltrim(a.query), ' ', 1)) AS ""Komut"",
+            a.wait_event_type || ':' || a.wait_event AS ""WaitType"",
+            (pg_blocking_pids(a.pid))[1] AS ""BlokeEden"",
+            NULL::bigint AS ""CpuMs"",
+            (extract(epoch FROM (now() - a.query_start)) * 1000)::bigint AS ""GecenMs"",
+            a.datname AS ""Veritabani"",
+            left(a.query, 2000) AS ""Sorgu""
+        FROM pg_stat_activity a
+        WHERE a.backend_type = 'client backend' AND a.pid <> pg_backend_pid()
+        ORDER BY (pg_blocking_pids(a.pid))[1] DESC NULLS LAST, a.query_start NULLS LAST";
+
+    public string SlowQueriesSql(int top, string by)
+    {
+        // PG'de ayrı CPU süresi tutulmaz: --by cpu sessizce başka bir ölçüte eşlenmez, net hata verir.
+        var orderBy = by.ToLowerInvariant() switch
+        {
+            "total" => "s.total_exec_time",
+            "cpu" => throw new ArgumentException("PostgreSQL pg_stat_statements CPU süresi tutmaz; --by cpu desteklenmez (avg|total|reads|executions)."),
+            "reads" => "(s.shared_blks_hit + s.shared_blks_read)",
+            "executions" => "s.calls",
+            "avg" => "s.mean_exec_time",
+            _ => throw new ArgumentException($"--by yalnız avg|total|cpu|reads|executions olabilir: '{by}'")
+        };
+        // Sütun şekli SQL Server ile aynı; PG'de karşılığı olmayanlar (CpuMs, SonCalistirma) NULL.
+        return $@"
+            SELECT
+                s.calls AS ""Calistirma"",
+                round(s.total_exec_time::numeric, 1) AS ""ToplamMs"",
+                round(s.mean_exec_time::numeric, 2) AS ""OrtalamaMs"",
+                NULL::numeric AS ""CpuMs"",
+                s.shared_blks_hit + s.shared_blks_read AS ""MantiksalOkuma"",
+                NULL::timestamptz AS ""SonCalistirma"",
+                left(s.query, 2000) AS ""Sorgu""
+            FROM pg_stat_statements s
+            WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+            ORDER BY {orderBy} DESC
+            LIMIT {top}";
+    }
+
+    public string? SlowQueriesPrecheckSql =>
+        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')";
+
+    public string SlowQueriesPrecheckMessage =>
+        "pg_stat_statements eklentisi bu veritabanında kurulu değil. Etkinleştirmek için: " +
+        "postgresql.conf → shared_preload_libraries = 'pg_stat_statements' (sunucu yeniden başlatılır), " +
+        "sonra `CREATE EXTENSION pg_stat_statements;`.";
+
+    public string? SlowQueriesErrorHint(DbException ex) =>
+        ex is PostgresException { SqlState: "55000" }
+            ? "pg_stat_statements kurulu ama yüklü değil: shared_preload_libraries'e ekleyip sunucuyu yeniden başlatın."
+            : null;
+
+    public string KillSql(int sessionId, bool hard) =>
+        $"SELECT {(hard ? "pg_terminate_backend" : "pg_cancel_backend")}({sessionId})";
+
+    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
+    {
+        var fmt = (format ?? "text").ToLowerInvariant();
+        if (fmt is not ("text" or "json" or "xml"))
+            throw new ArgumentException($"PostgreSQL explain --format yalnız text|json|xml olabilir: '{format}'");
+
+        var stmt = sql.Trim().TrimEnd(';', ' ', '\r', '\n', '\t');
+        // Tek ifade şartı: "EXPLAIN a; DELETE ..." ikinci ifadeyi plansız GERÇEKTEN çalıştırırdı.
+        if (SqlGuard.YorumVeMetinSil(stmt).Contains(';'))
+            throw new ArgumentException("explain tek bir SQL ifadesi alır (`;` ile ayrılmış birden fazla ifade yok).");
+
+        var opts = (actual ? "ANALYZE, BUFFERS, " : "") + $"FORMAT {fmt.ToUpperInvariant()}";
+
+        // Hep transaction + ROLLBACK: ANALYZE ifadeyi gerçekten çalıştırır (INSERT/UPDATE/DELETE dahil);
+        // plan alındıktan sonra yapılan değişiklik geri alınır. Tahmini planda da zararsız.
+        await using var tx = await c.BeginTransactionAsync();
+        try
+        {
+            using var cmd = c.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = $"EXPLAIN ({opts}) {stmt}";
+            await using var reader = await cmd.ExecuteReaderAsync();
+            var lines = new List<string>();
+            while (await reader.ReadAsync()) lines.Add(reader[0]?.ToString() ?? "");
+            var plan = string.Join("\n", lines);
+            var label = $"Execution Plan ({fmt.ToUpperInvariant()}{(actual ? ", ANALYZE+BUFFERS — değişiklikler geri alındı" : ", tahmini")})";
+            return new ExplainResult(label, new[] { plan });
+        }
+        finally
+        {
+            await tx.RollbackAsync();
+        }
+    }
 
     private static string Esc(string s) => s.Replace("'", "''");
 }
