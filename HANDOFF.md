@@ -33,6 +33,6 @@ Bağlam: BKM görev-tanımları projesi Mosaik'e taşınırken sqlcli araç olar
 ## v2.7.0 (05.11.2026) — PostgreSQL perf + copy
 - `explain` (`--analyze`, `--format text|json`), `active-sessions`, `slow-queries`, `kill` (`--terminate`) PG'de çalışır; SQL `ISqlDialect`'te (`Core/Dialects.cs`).
 - `copy` PG→PG: `Core/PostgresCopy.cs` (ham ikili COPY, tek hedef transaction). Karışık çift reddedilir.
-- Doğrulama: geçici PG 17 cluster'ında (port 55477, tek kullanımlık) elle; Nexus dev DB (55433) o sırada kapalıydı, dokunulmadı. Sunucusuz birim testi: `DialectPerfTests`.
+- Doğrulama (+ParityTests: SQLCLI_TEST_PG): geçici PG 17 cluster'ında (port 55477, tek kullanımlık) elle; Nexus dev DB (55433) o sırada kapalıydı, dokunulmadı. Sunucusuz birim testi: `DialectPerfTests`.
 - Açık: `copy` PG'de `--param`/`--parallel` yok (COPY parametre almaz). Gerçek Nexus DB'ye karşı `explain`/`active-sessions` salt-okuma doğrulaması yapılmadı (DB kapalıydı).
 - Sürüm tag'i (`v2.7.0`) merge sonrası atılır (README "Yeni sürüm yayınlama"); v2.6.2 tag'i de hâlâ atılmadı.

@@ -287,7 +287,8 @@ public sealed class SqlServerDialect : ISqlDialect
             "cpu" => "qs.total_worker_time",
             "reads" => "qs.total_logical_reads",
             "executions" => "qs.execution_count",
-            _ => "qs.total_elapsed_time / qs.execution_count"
+            "avg" => "qs.total_elapsed_time / qs.execution_count",
+            _ => throw new ArgumentException($"--by yalnız avg|total|cpu|reads|executions olabilir: '{by}'")
         };
         return $@"
             SELECT TOP {top}
@@ -315,16 +316,26 @@ public sealed class SqlServerDialect : ISqlDialect
 
     public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
     {
+        // Paritesi: PG'nin text/json planı SQL Server'da yok → sessizce yok sayma, net hata.
+        if (!string.IsNullOrEmpty(format) && !format.Equals("xml", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"SQL Server planı yalnız XML üretir; --format '{format}' desteklenmez (xml ya da hiç verme).");
+
         var setStmt = actual ? "SET STATISTICS XML ON;" : "SET SHOWPLAN_XML ON;";
         var unsetStmt = actual ? "SET STATISTICS XML OFF;" : "SET SHOWPLAN_XML OFF;";
         var plans = new List<string>();
+
+        // actual: sorgu GERÇEKTEN çalışır → PG'deki gibi transaction içinde, sonunda ROLLBACK
+        // (INSERT/UPDATE/DELETE plan alındıktan sonra geri alınır). Tahmini planda çalıştırma yok.
+        DbTransaction? tx = actual ? await c.BeginTransactionAsync() : null;
         try
         {
             using var setCmd = c.CreateCommand();
+            setCmd.Transaction = tx;
             setCmd.CommandText = setStmt;
             await setCmd.ExecuteNonQueryAsync();
 
             using var qCmd = c.CreateCommand();
+            qCmd.Transaction = tx;
             qCmd.CommandText = sql;
             await using var reader = await qCmd.ExecuteReaderAsync();
 
@@ -342,11 +353,13 @@ public sealed class SqlServerDialect : ISqlDialect
         finally
         {
             using var unsetCmd = c.CreateCommand();
+            unsetCmd.Transaction = tx;
             unsetCmd.CommandText = unsetStmt;
             await unsetCmd.ExecuteNonQueryAsync();
+            if (tx != null) { await tx.RollbackAsync(); await tx.DisposeAsync(); }
         }
-        var note = string.IsNullOrEmpty(format) ? null : "SQL Server planı yalnız XML üretir; --format yok sayıldı.";
-        return new ExplainResult("Execution Plan (XML)", plans, note);
+        var label = actual ? "Execution Plan (XML, actual — değişiklikler geri alındı)" : "Execution Plan (XML, tahmini)";
+        return new ExplainResult(label, plans);
     }
 
     private static string Esc(string s) => s.Replace("'", "''");
@@ -504,8 +517,10 @@ public sealed class PostgresDialect : ISqlDialect
             a.client_addr::text AS ""Host"",
             a.application_name AS ""Program"",
             a.state AS ""Durum"",
+            upper(split_part(ltrim(a.query), ' ', 1)) AS ""Komut"",
             a.wait_event_type || ':' || a.wait_event AS ""WaitType"",
             (pg_blocking_pids(a.pid))[1] AS ""BlokeEden"",
+            NULL::bigint AS ""CpuMs"",
             (extract(epoch FROM (now() - a.query_start)) * 1000)::bigint AS ""GecenMs"",
             a.datname AS ""Veritabani"",
             left(a.query, 2000) AS ""Sorgu""
@@ -515,22 +530,25 @@ public sealed class PostgresDialect : ISqlDialect
 
     public string SlowQueriesSql(int top, string by)
     {
-        // PG'de "cpu" ayrı tutulmaz; total_exec_time'a eşlenir.
+        // PG'de ayrı CPU süresi tutulmaz: --by cpu sessizce başka bir ölçüte eşlenmez, net hata verir.
         var orderBy = by.ToLowerInvariant() switch
         {
-            "total" or "cpu" => "s.total_exec_time",
+            "total" => "s.total_exec_time",
+            "cpu" => throw new ArgumentException("PostgreSQL pg_stat_statements CPU süresi tutmaz; --by cpu desteklenmez (avg|total|reads|executions)."),
             "reads" => "(s.shared_blks_hit + s.shared_blks_read)",
             "executions" => "s.calls",
-            _ => "s.mean_exec_time"
+            "avg" => "s.mean_exec_time",
+            _ => throw new ArgumentException($"--by yalnız avg|total|cpu|reads|executions olabilir: '{by}'")
         };
+        // Sütun şekli SQL Server ile aynı; PG'de karşılığı olmayanlar (CpuMs, SonCalistirma) NULL.
         return $@"
             SELECT
                 s.calls AS ""Calistirma"",
                 round(s.total_exec_time::numeric, 1) AS ""ToplamMs"",
                 round(s.mean_exec_time::numeric, 2) AS ""OrtalamaMs"",
-                s.rows AS ""Satir"",
+                NULL::numeric AS ""CpuMs"",
                 s.shared_blks_hit + s.shared_blks_read AS ""MantiksalOkuma"",
-                s.shared_blks_read AS ""DiskOkuma"",
+                NULL::timestamptz AS ""SonCalistirma"",
                 left(s.query, 2000) AS ""Sorgu""
             FROM pg_stat_statements s
             WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
@@ -557,8 +575,8 @@ public sealed class PostgresDialect : ISqlDialect
     public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
     {
         var fmt = (format ?? "text").ToLowerInvariant();
-        if (fmt is not ("text" or "json"))
-            throw new ArgumentException($"PostgreSQL explain --format yalnız text|json olabilir: '{format}'");
+        if (fmt is not ("text" or "json" or "xml"))
+            throw new ArgumentException($"PostgreSQL explain --format yalnız text|json|xml olabilir: '{format}'");
 
         var stmt = sql.Trim().TrimEnd(';', ' ', '\r', '\n', '\t');
         // Tek ifade şartı: "EXPLAIN a; DELETE ..." ikinci ifadeyi plansız GERÇEKTEN çalıştırırdı.

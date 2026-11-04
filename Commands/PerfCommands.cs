@@ -16,7 +16,7 @@ public class PerfCommands
         [Option] string? profile = null,
         [Option(Description = "Plan tipi: estimated|actual (actual sorguyu GERÇEKTEN çalıştırır)")] string mode = "estimated",
         [Option(Description = "--mode=actual kısayolu. PostgreSQL: EXPLAIN (ANALYZE, BUFFERS); değişiklikler geri alınır")] bool analyze = false,
-        [Option(Description = "PostgreSQL plan biçimi: text|json (varsayılan text). SQL Server yalnız XML")] string? format = null)
+        [Option(Description = "Plan biçimi. PostgreSQL: text|json|xml (varsayılan text); SQL Server: yalnız xml (varsayılan xml), diğerleri hata")] string? format = null)
     {
         var resolved = Resolve(conn, profile);
         if (!EnsurePerf(resolved)) return;
@@ -76,6 +76,13 @@ public class PerfCommands
         var resolved = Resolve(conn, profile);
         if (!EnsurePerf(resolved)) return;
         var dialect = resolved.Dialect;
+        string slowSql;
+        try { slowSql = dialect.SlowQueriesSql(top, by); }
+        catch (ArgumentException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]HATA:[/] {Markup.Escape(ex.Message)}");
+            throw new CommandExitedException(2);
+        }
 
         if (dialect.SlowQueriesPrecheckSql != null)
         {
@@ -89,7 +96,7 @@ public class PerfCommands
 
         try
         {
-            await RunQuery(resolved, format, dialect.SlowQueriesSql(top, by));
+            await RunQuery(resolved, format, slowSql);
         }
         catch (DbException ex) when (dialect.SlowQueriesErrorHint(ex) is { } ipucu)
         {
@@ -111,6 +118,9 @@ public class PerfCommands
 
         var pg = resolved.Dialect.Provider == DbProvider.Postgres;
         var eylem = pg && !terminate ? "sorgusu iptal edilsin" : "sonlandırılsın";
+        // SQL Server'da yalnız sorgu iptali yok; KILL oturumu sonlandırır (--terminate ile aynı). Sessiz bırakma.
+        if (!pg && !terminate)
+            AnsiConsole.MarkupLine("[yellow]Not: SQL Server'da sorgu iptali yok; KILL oturumun kendisini sonlandırır.[/]");
         if (!yes)
         {
             var ok = AnsiConsole.Confirm($"Session [yellow]{sessionId}[/] {eylem} mi?", false);
@@ -119,7 +129,14 @@ public class PerfCommands
         await using var c = await ConnectionResolver.OpenAsync(resolved.Effective);
         using var cmd = c.CreateCommand();
         cmd.CommandText = resolved.Dialect.KillSql(sessionId, terminate);
-        var sonuc = await cmd.ExecuteScalarAsync();   // PG: bool; SQL Server KILL: sonuç kümesi yok (null)
+        object? sonuc;
+        try { sonuc = await cmd.ExecuteScalarAsync(); }   // PG: bool; SQL Server KILL: sonuç kümesi yok (null)
+        catch (DbException ex)
+        {
+            // SQL Server'da olmayan/yetkisiz session hata fırlatır; PG'de false döner → ikisi de aynı HATA + exit 2.
+            AnsiConsole.MarkupLine($"[red]HATA:[/] Session {sessionId} için işlem uygulanamadı: {Markup.Escape(ex.Message)}");
+            throw new CommandExitedException(2);
+        }
         if (sonuc is false)
         {
             AnsiConsole.MarkupLine($"[red]HATA:[/] Session {sessionId} için işlem uygulanamadı (pid yok ya da yetki yetersiz).");

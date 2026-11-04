@@ -33,7 +33,6 @@ public class DialectPerfTests
     [Theory]
     [InlineData("avg", "s.mean_exec_time")]
     [InlineData("total", "s.total_exec_time")]
-    [InlineData("cpu", "s.total_exec_time")]
     [InlineData("reads", "s.shared_blks_hit + s.shared_blks_read")]
     [InlineData("executions", "s.calls")]
     public void SlowQueries_pg_siralama(string by, string beklenen)
@@ -73,6 +72,6 @@ public class DialectPerfTests
     [Fact]
     public async Task Explain_pg_bilinmeyen_format_reddi()
     {
-        await Assert.ThrowsAsync<ArgumentException>(() => Pg.ExplainAsync(null!, "SELECT 1", actual: false, format: "xml"));
+        await Assert.ThrowsAsync<ArgumentException>(() => Pg.ExplainAsync(null!, "SELECT 1", actual: false, format: "yaml"));
     }
 }

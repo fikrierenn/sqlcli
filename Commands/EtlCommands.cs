@@ -78,6 +78,12 @@ public class EtlCommands
 
         if (postgres)
         {
+            // SQL Server'a özgü bayraklar PG'de sessizce yok sayılmaz: ya zaten sağlanır ya da not düşülür.
+            if (checkConstraints) Log(json, "[grey]Not: PostgreSQL COPY CHECK/FK kısıtlarını zaten her zaman denetler (--check-constraints karşılığı hep açık).[/]");
+            if (fireTriggers) Log(json, "[grey]Not: PostgreSQL COPY INSERT tetikleyicilerini zaten çalıştırır (--fire-triggers karşılığı hep açık).[/]");
+            if (atomic) Log(json, "[grey]Not: PostgreSQL'de yükleme + TRUNCATE zaten tek transaction (--atomic hep açık).[/]");
+            if (batch != 100000) Log(json, "[yellow]UYARI:[/] --batch PostgreSQL'de uygulanmaz (tek COPY akışı); yok sayıldı.");
+            if (!string.IsNullOrWhiteSpace(partkey)) Log(json, "[yellow]UYARI:[/] --partkey PostgreSQL'de uygulanmaz (--parallel yok); yok sayıldı.");
             await CopyPostgresAsync(from, to, query, table, truncate, timeout, saltOkuma, param, parallel, json);
             return;
         }
