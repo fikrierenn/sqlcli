@@ -61,10 +61,13 @@ public class EtlCommands
         if (atomic && parallel > 1)
             Kosamadi(json, "--atomic tek transaction ister; --parallel > 1 ile birlikte kullanilamaz.");
 
-        // SqlBulkCopy yalnız SQL Server. Her iki uç da SQL Server olmalı.
-        if (ISqlDialect.Detect(from).Provider != DbProvider.SqlServer
-            || ISqlDialect.Detect(to).Provider != DbProvider.SqlServer)
-            Kosamadi(json, "copy (SqlBulkCopy) yalnız SQL Server → SQL Server destekler. Postgres için ileride COPY protokolü eklenecek.");
+        // Sağlayıcı çifti: SQL Server → SQL Server (SqlBulkCopy) ya da PostgreSQL → PostgreSQL (ikili COPY).
+        // Karışık çift (cross-provider) desteklenmez.
+        var kProv = ISqlDialect.Detect(from).Provider;
+        var hProv = ISqlDialect.Detect(to).Provider;
+        if (kProv != hProv)
+            Kosamadi(json, "copy kaynak ve hedef aynı sağlayıcıda olmalı (SQL Server→SQL Server ya da PostgreSQL→PostgreSQL); karışık çift desteklenmez.");
+        var postgres = kProv == DbProvider.Postgres;
 
         // MUHAFIZ: kullanici sorgusuna (paralel sarmadan ONCE) ve kaynaga hicbir sey gitmeden.
         var saltOkuma = SqlGuard.SaltOkumaAcikMi(readOnly);
@@ -72,6 +75,12 @@ public class EtlCommands
             Log(json, "[yellow]UYARI:[/] --read-only=false — kaynak sorgu salt-okuma muhafizindan GECIRILMIYOR.");
         var red = SqlGuard.Denetle(query, readOnly);
         if (red != null) Kosamadi(json, red);
+
+        if (postgres)
+        {
+            await CopyPostgresAsync(from, to, query, table, truncate, timeout, saltOkuma, param, parallel, json);
+            return;
+        }
 
         var opts = SqlBulkCopyOptions.KeepNulls;
         if (tablock) opts |= SqlBulkCopyOptions.TableLock;  // heap'te BU-lock'lar uyumlu → paralele izin verir
@@ -176,6 +185,57 @@ public class EtlCommands
             var neden = atomic ? "hedef transaction geri alindi (--atomic): hedef degismedi"
                                : "YARIM YUKLEME OLABILIR: tamamlanan batch'ler (ve varsa TRUNCATE) hedefte kaldi";
             Kosamadi(json, $"{(no != null ? $"SQL {no}: " : "")}{ex.Message} — {neden}", no, sure.ElapsedMilliseconds);
+        }
+    }
+
+    // PostgreSQL → PostgreSQL: ikili COPY (Core/PostgresCopy.cs). SQL Server'a özgü seçenekler PG'de anlamsız;
+    // sessizce yok sayılmaz — parametre/paralel açıkça reddedilir.
+    private static async Task CopyPostgresAsync(string from, string to, string query, string table, bool truncate,
+                                                int timeout, bool saltOkuma, string[]? param, int parallel, bool json)
+    {
+        if (param is { Length: > 0 })
+            Kosamadi(json, "PostgreSQL copy --param desteklemez (COPY (sorgu) TO STDOUT parametre almaz); değeri sorguya yaz.");
+        if (parallel > 1)
+            Kosamadi(json, "PostgreSQL copy --parallel desteklemez (tek COPY akışı).");
+
+        var sure = Stopwatch.StartNew();
+        try
+        {
+            var s = await PostgresCopy.RunAsync(from, to, query, table, truncate, timeout, saltOkuma);
+            sure.Stop();
+            Log(json, $"[grey]kaynak: {Markup.Escape(s.KaynakSunucu)} / {Markup.Escape(s.KaynakDb)}  →  hedef: {Markup.Escape(s.HedefSunucu)} / {Markup.Escape(s.HedefDb)} · {Markup.Escape(table)}[/]");
+            if (json)
+            {
+                Console.Out.WriteLine(JsonSerializer.Serialize(new
+                {
+                    durum = "TAMAM",
+                    satir = s.Satir,
+                    sure_ms = sure.ElapsedMilliseconds,
+                    kaynak_sunucu = s.KaynakSunucu,
+                    kaynak_db = s.KaynakDb,
+                    hedef_sunucu = s.HedefSunucu,
+                    hedef_db = s.HedefDb,
+                    tablo = table,
+                    hedef_toplam = s.HedefToplam,
+                    read_only = saltOkuma,
+                    atomic = true,
+                    truncate,
+                }));
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[green]OK[/] {Markup.Escape(table)} <- aktarilan: [cyan]{s.Satir}[/] satir, {sure.ElapsedMilliseconds} ms (tablo toplami: {s.HedefToplam})");
+                AnsiConsole.MarkupLine($"SONUC satir={s.Satir} sure_ms={sure.ElapsedMilliseconds}");
+            }
+        }
+        catch (CommandExitedException) { throw; }
+        catch (Exception ex)
+        {
+            sure.Stop();
+            var no = (ex as Npgsql.PostgresException)?.SqlState ?? (ex.InnerException as Npgsql.PostgresException)?.SqlState;
+            Kosamadi(json, $"{(no != null ? $"SQLSTATE {no}: " : "")}{ex.Message} — hedef transaction geri alindi: hedef degismedi" +
+                     (no is "08P01" or "22P03" ? " (ikili COPY: kolon tipleri kaynak ve hedefte BIREBIR ayni olmali)" : ""),
+                     null, sure.ElapsedMilliseconds);
         }
     }
 

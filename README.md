@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.6.2)
+# sqlcli — ölçümün eli (v2.7.0)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.6.2 · .NET 10 · global araç adı `sqlcli`.*
+*v2.7.0 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -57,7 +57,7 @@ kendi kuralını, kendi şema kopyasını yazmaz.
 **SQL Server + PostgreSQL** için modern, hızlı, çoklu-profil destekli yönetim CLI'ı.
 Migration + keşif + query + performans + history + export/import/diff hepsi tek araçta.
 
-> **Çok-sağlayıcı (v2.1):** Sağlayıcı connection string'ten otomatik tespit edilir — `Host=` veya `postgres://` → PostgreSQL, aksi → SQL Server. Keşif/query/migrate/seed/export/import/diff iki DB'de de çalışır. Perf DMV (`explain`/`active-sessions`/`slow-queries`/`kill`) ve `copy` (SqlBulkCopy) şimdilik yalnız SQL Server. **Oracle:** yeni bir `ISqlDialect` impl'i ile eklenir (dialect seam hazır — `Core/Dialects.cs`).
+> **Çok-sağlayıcı (v2.1):** Sağlayıcı connection string'ten otomatik tespit edilir — `Host=` veya `postgres://` → PostgreSQL, aksi → SQL Server. Keşif/query/migrate/seed/export/import/diff iki DB'de de çalışır. Perf komutları (`explain`/`active-sessions`/`slow-queries`/`kill`) ve `copy` **v2.7'den beri iki sağlayıcıda da** çalışır (bkz. "PostgreSQL perf + copy (v2.7)"). **Oracle:** yeni bir `ISqlDialect` impl'i ile eklenir (dialect seam hazır — `Core/Dialects.cs`).
 >
 > **KANONİK KOPYA = `D:\Dev\sqlcli`.** MIMBAL/tools/sqlcli ve fifo/sqlcli ESKİ birebir kopyalardır (drift). Diğer projeler global tool + kendi `sqlcli.json`'unu kullanmalı; kaynak fork'lamayın.
 
@@ -279,7 +279,7 @@ döndürülür. Hedef **kalıcı olarak asla değişmez**; yazma yalnız geri al
 kapatılır. DAC tek oturuma izin verir. Otomatik açma kapalıyken DAC açılamazsa komut **neyin gerektiğini açıkça
 söyler** ve exit 2 verir. Çözme hatasında (hiç nesne çözülemediyse) exit 1.
 
-### ETL — `copy` (SQL Server → SQL Server, SqlBulkCopy)
+### ETL — `copy` (SQL Server → SQL Server SqlBulkCopy · PostgreSQL → PostgreSQL ikili COPY)
 
 ```bash
 sqlcli copy --from "<kaynak>" --to "<hedef>" --query "SELECT Id, Deger FROM dbo.X WHERE Tarih >= @Bas"   --param Bas:date=2026-01-01 --table dbo.Hedef --batch 50000 --check-constraints --fire-triggers --format json
@@ -303,10 +303,38 @@ tablo boşaltılmış ve hataya kadar tamamlanan batch'ler hedefte **kalmış** 
 
 | Komut | Açıklama |
 |---|---|
-| `explain "SQL" [--mode=estimated\|actual]` | Execution plan XML |
-| `active-sessions` | Aktif oturumlar + blocking + sorgu metni |
-| `slow-queries [--top=20] [--by=avg\|total\|cpu\|reads\|executions]` | Plan cache'den en yavaşlar |
-| `kill <session_id> [--yes]` | Oturum sonlandır (onay sorar) |
+| `explain "SQL" [--mode=estimated\|actual] [--analyze] [--format=text\|json]` | Execution plan (SQL Server: XML · PostgreSQL: `EXPLAIN` text/json) |
+| `active-sessions` | Aktif oturumlar + blocking + sorgu metni (SQL Server DMV · PostgreSQL `pg_stat_activity`) |
+| `slow-queries [--top=20] [--by=avg\|total\|cpu\|reads\|executions]` | En yavaşlar (SQL Server plan cache · PostgreSQL `pg_stat_statements`) |
+| `kill <session_id\|pid> [--yes] [--terminate]` | Oturum sonlandır (onay sorar). PostgreSQL: varsayılan `pg_cancel_backend` (yalnız çalışan sorgu), `--terminate` = `pg_terminate_backend` |
+
+### PostgreSQL perf + copy (v2.7)
+
+Sağlayıcı bağlantıdan seçilir; komutlar aynı, SQL `ISqlDialect` içinde (`Core/Dialects.cs`).
+
+```bash
+# Tahmini plan (sorgu ÇALIŞMAZ)
+sqlcli explain "SELECT * FROM orders WHERE id = 1" --profile nexusflow-dev
+sqlcli explain "SELECT * FROM orders WHERE id = 1" --profile nexusflow-dev --format json
+
+# Gerçek çalıştırma: EXPLAIN (ANALYZE, BUFFERS) — YALNIZ istenirse (--analyze veya --mode actual)
+sqlcli explain "SELECT * FROM orders WHERE total > 100" --analyze --profile nexusflow-dev
+# INSERT/UPDATE/DELETE de çalışır ama plan alınınca transaction GERİ ALINIR (hedef değişmez)
+sqlcli explain "DELETE FROM orders WHERE id = 1" --analyze --profile nexusflow-dev
+
+sqlcli active-sessions --profile nexusflow-dev --format json
+sqlcli slow-queries --top 10 --by total --profile nexusflow-dev      # pg_stat_statements gerekir
+sqlcli kill 12345 --yes --profile nexusflow-dev                      # çalışan sorguyu iptal (pg_cancel_backend)
+sqlcli kill 12345 --yes --terminate --profile nexusflow-dev          # oturumu kopar (pg_terminate_backend)
+
+# PostgreSQL → PostgreSQL ikili COPY (kolonlar ada göre eşlenir)
+sqlcli copy --from "Host=a;Database=x;Username=u" --to "Host=b;Database=y;Username=u" --query "SELECT id, ad FROM public.src" --table public.hedef --truncate --format json
+```
+
+- **`explain`:** ANALYZE açık değilse sorgu hiç çalışmaz. Tek ifade alır (`;` ile ayrılmış çoklu ifade reddedilir — ikinci ifade planlanmadan çalışırdı). `SQLCLI_READONLY=1` iken `--analyze` yalnız SELECT/WITH kabul eder. SQL Server'da `--format` yok sayılır (yalnız XML; uyarı basılır).
+- **`slow-queries` (PG):** `pg_stat_statements` yoksa ya da `shared_preload_libraries`'te değilse net mesajla çıkar (exit 2). `cpu` ayrı tutulmadığı için `total` ile aynı sıralanır; sütunlar: Calistirma, ToplamMs, OrtalamaMs, Satir, MantiksalOkuma, DiskOkuma, Sorgu.
+- **`kill` (PG):** pid yoksa/yetki yetmiyorsa PG `false` döner → hata + exit 2.
+- **`copy` (PG):** ham `COPY (sorgu) TO STDOUT (FORMAT BINARY)` → `COPY tablo (kolonlar) FROM STDIN (FORMAT BINARY)`. Kolon **tipleri kaynak/hedefte birebir aynı** olmalı (int4→int8 ikili COPY'de hata verir; mesaj bunu söyler). Yükleme + `--truncate` tek hedef transaction'ıdır (hata → hedef değişmez; SQL Server'daki `--atomic` PG'de hep geçerli). `--read-only` varsayılan açık ve kaynakta ayrıca `SET TRANSACTION READ ONLY`. `--param`, `--parallel`, `--batch`, `--tablock`, `--check-constraints`/`--fire-triggers` PG'de yok (PG kısıtları ve tetikleyicileri zaten her zaman işletir); `--param`/`--parallel` verilirse reddedilir. Karışık çift (SQL Server↔PG) desteklenmez.
 
 ## Çıktı formatları
 
@@ -358,6 +386,13 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.7.0 (2026-11-05) — PostgreSQL perf komutları + `copy`
+- `explain` / `active-sessions` / `slow-queries` / `kill` PostgreSQL'de çalışır; SQL `ISqlDialect`'e taşındı (`ActiveSessionsSql`, `SlowQueriesSql`, `KillSql`, `ExplainAsync`) — komutlarda sağlayıcı dalı yok, SQL Server SQL'i aynen korundu.
+- `explain --analyze` (PG): `EXPLAIN (ANALYZE, BUFFERS)`, opt-in; her çalıştırma transaction'da, sonunda ROLLBACK. `--format text|json`.
+- `kill --terminate` (PG): `pg_terminate_backend`; varsayılan `pg_cancel_backend`.
+- `copy` PostgreSQL → PostgreSQL: ikili COPY, tek hedef transaction.
+- Test: `DialectPerfTests` (sunucusuz). PG uçtan uca elle, geçici bir PG 17 cluster'ında doğrulandı.
 
 ### v2.6.2 (2026-11-01) — güvenlik: System.Security.Cryptography.Pkcs 9.0.21
 - Geçişli `System.Security.Cryptography.Pkcs` 9.0.0 (Microsoft.Data.SqlClient → System.Configuration.ConfigurationManager üzerinden) bilinen açıklar taşıyordu (GHSA-846f-f764-76mx yüksek, GHSA-2fmv-rv2c-59x7 orta). csproj'a açık `PackageReference` ile yamalı **9.0.21** sabitlendi; başka yükseltme yok. Sürüm tag'i (`v2.6.2`) merge sonrası atılır.

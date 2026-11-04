@@ -114,7 +114,7 @@ public static class SqlGuard
          .ToList();
 
     /// <summary>Tek/çift tırnaklı metinleri ve -- / /* */ yorumlarını boşlukla değiştirir.</summary>
-    private static string YorumVeMetinSil(string sql)
+    internal static string YorumVeMetinSil(string sql)
     {
         var cikti = new System.Text.StringBuilder(sql.Length);
         int i = 0;
