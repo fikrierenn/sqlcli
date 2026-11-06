@@ -130,4 +130,36 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
         var sonuc = (await Tablo(Pg, new PostgresDialect().KillSql(2147483000, hard: false))).Rows[0][0];
         Assert.Equal(false, sonuc);
     }
+
+    // ---- PR #4 Codex bulgusu: aynı DB'de sorgu hedef tabloyu okuyorsa TRUNCATE kaynak kilidinde takılıyordu ----
+    [Fact]
+    public async Task PgCopy_ayni_tablodan_kendine_truncate_hizli_reddedilir()
+    {
+        await Exec(Pg, "DROP TABLE IF EXISTS public.pt_self; CREATE TABLE public.pt_self(id int); INSERT INTO public.pt_self VALUES (1),(2);");
+        try
+        {
+            var sure = System.Diagnostics.Stopwatch.StartNew();
+            // timeout 0 = sınırsız: eski kod burada sonsuza dek beklerdi → test süre aşımıyla kırmızı olurdu.
+            var gorev = PostgresCopy.RunAsync(Pg, Pg, "SELECT id FROM public.pt_self", "public.pt_self", truncate: true, timeoutSeconds: 0, saltOkuma: true);
+            var bitti = await Task.WhenAny(gorev, Task.Delay(TimeSpan.FromSeconds(20)));
+            Assert.Same(gorev, bitti);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => gorev);
+            Assert.Contains("kendi", ex.Message);
+            Assert.Equal(2, await Say(Pg, "SELECT COUNT(*) FROM public.pt_self"));   // hedef bozulmadı
+        }
+        finally { await Exec(Pg, "DROP TABLE IF EXISTS public.pt_self"); }
+    }
+
+    [Fact]
+    public async Task PgCopy_ayni_db_farkli_tablo_truncate_calisir()
+    {
+        await Exec(Pg, "DROP TABLE IF EXISTS public.pt_k; DROP TABLE IF EXISTS public.pt_h; CREATE TABLE public.pt_k(id int); CREATE TABLE public.pt_h(id int); INSERT INTO public.pt_k VALUES (1),(2),(3); INSERT INTO public.pt_h VALUES (9);");
+        try
+        {
+            var s = await PostgresCopy.RunAsync(Pg, Pg, "SELECT id FROM public.pt_k", "public.pt_h", truncate: true, timeoutSeconds: 30, saltOkuma: true);
+            Assert.Equal(3, s.Satir);
+            Assert.Equal(3, await Say(Pg, "SELECT COUNT(*) FROM public.pt_h"));
+        }
+        finally { await Exec(Pg, "DROP TABLE IF EXISTS public.pt_k; DROP TABLE IF EXISTS public.pt_h"); }
+    }
 }
