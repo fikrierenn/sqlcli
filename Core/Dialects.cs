@@ -56,8 +56,9 @@ public interface ISqlDialect
     string? SlowQueriesErrorHint(DbException ex);
     /// <param name="hard">true: oturumu sonlandır (PG: pg_terminate_backend); false: yalnız çalışan sorguyu iptal et (PG: pg_cancel_backend). SQL Server her zaman KILL.</param>
     string KillSql(int sessionId, bool hard);
-    /// <summary>Plan üretir. actual=true sorguyu GERÇEKTEN çalıştırır (PG: ANALYZE; değişiklikler geri alınır).</summary>
-    Task<ExplainResult> ExplainAsync(DbConnection conn, string sql, bool actual, string? format);
+    /// <summary>Plan üretir. actual=true sorguyu GERÇEKTEN çalıştırır (PG: ANALYZE; tablo değişiklikleri geri alınır).
+    /// Rollback sequence/dblink/NOTIFY gibi yan etkileri geri ALMAZ: bu belirteçler varsa <paramref name="allowSideEffects"/> verilmedikçe ArgumentException.</summary>
+    Task<ExplainResult> ExplainAsync(DbConnection conn, string sql, bool actual, string? format, bool allowSideEffects = false);
 
     static ISqlDialect Detect(string connStr)
     {
@@ -314,11 +315,17 @@ public sealed class SqlServerDialect : ISqlDialect
 
     public string KillSql(int sessionId, bool hard) => $"KILL {sessionId}";
 
-    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
+    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format, bool allowSideEffects = false)
     {
         // Paritesi: PG'nin text/json planı SQL Server'da yok → sessizce yok sayma, net hata.
         if (!string.IsNullOrEmpty(format) && !format.Equals("xml", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException($"SQL Server planı yalnız XML üretir; --format '{format}' desteklenmez (xml ya da hiç verme).");
+
+        if (actual)
+        {
+            var red = YanEtkiDenetimi.Denetle(sql, DbProvider.SqlServer, allowSideEffects);
+            if (red != null) throw new ArgumentException(red);
+        }
 
         var setStmt = actual ? "SET STATISTICS XML ON;" : "SET SHOWPLAN_XML ON;";
         var unsetStmt = actual ? "SET STATISTICS XML OFF;" : "SET SHOWPLAN_XML OFF;";
@@ -358,7 +365,7 @@ public sealed class SqlServerDialect : ISqlDialect
             await unsetCmd.ExecuteNonQueryAsync();
             if (tx != null) { await tx.RollbackAsync(); await tx.DisposeAsync(); }
         }
-        var label = actual ? "Execution Plan (XML, actual — değişiklikler geri alındı)" : "Execution Plan (XML, tahmini)";
+        var label = actual ? "Execution Plan (XML, actual — tablo değişiklikleri geri alındı)" : "Execution Plan (XML, tahmini)";
         return new ExplainResult(label, plans);
     }
 
@@ -572,7 +579,7 @@ public sealed class PostgresDialect : ISqlDialect
     public string KillSql(int sessionId, bool hard) =>
         $"SELECT {(hard ? "pg_terminate_backend" : "pg_cancel_backend")}({sessionId})";
 
-    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format)
+    public async Task<ExplainResult> ExplainAsync(DbConnection c, string sql, bool actual, string? format, bool allowSideEffects = false)
     {
         var fmt = (format ?? "text").ToLowerInvariant();
         if (fmt is not ("text" or "json" or "xml"))
@@ -583,10 +590,17 @@ public sealed class PostgresDialect : ISqlDialect
         if (SqlGuard.YorumVeMetinSil(stmt).Contains(';'))
             throw new ArgumentException("explain tek bir SQL ifadesi alır (`;` ile ayrılmış birden fazla ifade yok).");
 
+        if (actual)
+        {
+            var red = YanEtkiDenetimi.Denetle(stmt, DbProvider.Postgres, allowSideEffects);
+            if (red != null) throw new ArgumentException(red);
+        }
+
         var opts = (actual ? "ANALYZE, BUFFERS, " : "") + $"FORMAT {fmt.ToUpperInvariant()}";
 
         // Hep transaction + ROLLBACK: ANALYZE ifadeyi gerçekten çalıştırır (INSERT/UPDATE/DELETE dahil);
-        // plan alındıktan sonra yapılan değişiklik geri alınır. Tahmini planda da zararsız.
+        // plan alındıktan sonra TABLO değişikliği geri alınır. Sequence/dblink/NOTIFY gibi yan etkiler geri
+        // alınmaz — bilinen belirteçler yukarıda (YanEtkiDenetimi) reddedilir. Tahmini planda da zararsız.
         await using var tx = await c.BeginTransactionAsync();
         try
         {
@@ -597,7 +611,7 @@ public sealed class PostgresDialect : ISqlDialect
             var lines = new List<string>();
             while (await reader.ReadAsync()) lines.Add(reader[0]?.ToString() ?? "");
             var plan = string.Join("\n", lines);
-            var label = $"Execution Plan ({fmt.ToUpperInvariant()}{(actual ? ", ANALYZE+BUFFERS — değişiklikler geri alındı" : ", tahmini")})";
+            var label = $"Execution Plan ({fmt.ToUpperInvariant()}{(actual ? ", ANALYZE+BUFFERS — tablo değişiklikleri geri alındı" : ", tahmini")})";
             return new ExplainResult(label, new[] { plan });
         }
         finally

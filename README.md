@@ -1,10 +1,10 @@
-# sqlcli — ölçümün eli (v2.7.1)
+# sqlcli — ölçümün eli (v2.7.2)
 
 **Tek komutla SQL Server ve PostgreSQL'e karşı sor, doğrula, dök.** `dotnet tool` olarak kurulur; profiller `sqlcli.json`'dan, şifreler
 ortam değişkeninden gelir — hiçbir şifre dosyaya yazılmaz. Omurgadaki her "ölçtüm" bu araçla yapılır: şema denetimi, kod kümesi dökümü,
 kapı iddiaları.
 
-*v2.7.1 · .NET 10 · global araç adı `sqlcli`.*
+*v2.7.2 · .NET 10 · global araç adı `sqlcli`.*
 
 ## Neden var
 
@@ -303,7 +303,7 @@ tablo boşaltılmış ve hataya kadar tamamlanan batch'ler hedefte **kalmış** 
 
 | Komut | Açıklama |
 |---|---|
-| `explain "SQL" [--mode=estimated\|actual] [--analyze] [--format=text\|json\|xml]` | Execution plan. `actual`/`--analyze` iki sağlayıcıda da sorguyu çalıştırır ve SONRA GERİ ALIR. SQL Server: yalnız xml · PostgreSQL: text/json/xml |
+| `explain "SQL" [--mode=estimated\|actual] [--analyze] [--allow-side-effects] [--format=text\|json\|xml]` | Execution plan. `actual`/`--analyze` iki sağlayıcıda da sorguyu çalıştırır ve tablo değişikliklerini SONRA GERİ ALIR; sequence/dblink/NOTIFY gibi **geri alınamaz** yan etkiler için `--allow-side-effects` gerekir (aşağıya bak). SQL Server: yalnız xml · PostgreSQL: text/json/xml |
 | `active-sessions` | Aktif oturumlar + blocking + sorgu metni (SQL Server DMV · PostgreSQL `pg_stat_activity`) |
 | `slow-queries [--top=20] [--by=avg\|total\|cpu\|reads\|executions]` | En yavaşlar (SQL Server plan cache · PostgreSQL `pg_stat_statements`) |
 | `kill <session_id\|pid> [--yes] [--terminate]` | Oturum sonlandır (onay sorar). PostgreSQL: varsayılan `pg_cancel_backend` (yalnız çalışan sorgu), `--terminate` = `pg_terminate_backend` |
@@ -319,8 +319,10 @@ sqlcli explain "SELECT * FROM orders WHERE id = 1" --profile nexusflow-dev --for
 
 # Gerçek çalıştırma: EXPLAIN (ANALYZE, BUFFERS) — YALNIZ istenirse (--analyze veya --mode actual)
 sqlcli explain "SELECT * FROM orders WHERE total > 100" --analyze --profile nexusflow-dev
-# INSERT/UPDATE/DELETE de çalışır ama plan alınınca transaction GERİ ALINIR (hedef değişmez)
+# INSERT/UPDATE/DELETE de çalışır ama plan alınınca transaction GERİ ALINIR (tablo verisi değişmez)
 sqlcli explain "DELETE FROM orders WHERE id = 1" --analyze --profile nexusflow-dev
+# nextval/dblink/NOTIFY geri alınmaz → --analyze varsayılan REDDEDER; etkiyi bilerek kabul edersen:
+sqlcli explain "SELECT nextval('orders_id_seq')" --analyze --allow-side-effects --profile nexusflow-dev
 
 sqlcli active-sessions --profile nexusflow-dev --format json
 sqlcli slow-queries --top 10 --by total --profile nexusflow-dev      # pg_stat_statements gerekir
@@ -334,12 +336,13 @@ sqlcli copy --from "Host=a;Database=x;Username=u" --to "Host=b;Database=y;Userna
 **Parite kuralı:** aynı komut, aynı bayrak, aynı çıktı şekli iki sağlayıcıda; fark yalnız alttaki dialect. Bir bayrağın bir tarafta karşılığı yoksa ya yakın eşdeğerine eşlenir ya da net hata/not verir — sessizce yok sayılmaz.
 
 - **`explain`:** `actual`/`--analyze` açık değilse sorgu hiç çalışmaz. Açıkken iki sağlayıcıda da sorgu çalışır ve transaction ROLLBACK ile geri alınır (SQL Server: `SET STATISTICS XML` · PG: `EXPLAIN (ANALYZE, BUFFERS)`; BUFFERS yalnız PG'de). Tek ifade alır (PG'de `;` ile ayrılmış çoklu ifade reddedilir — ikinci ifade planlanmadan çalışırdı). `SQLCLI_READONLY=1` iken `--analyze` yalnız SELECT/WITH kabul eder. `--format`: PG text|json|xml; SQL Server yalnız xml — `text`/`json` SQL Server'da **hata** verir.
+- **`explain --analyze` yan etkileri (v2.7.2):** ROLLBACK yalnız **tablo verisini** geri alır. Sequence ilerlemesi (`nextval`/`setval`, SQL Server'da `NEXT VALUE FOR`), `dblink*` ile uzak yazma, `NOTIFY`/`pg_notify`, oturum kilidi/ayarı (`pg_advisory_lock`, `set_config`), large object dosya işlemleri, SQL Server'da `EXEC`/`xp_cmdshell`/`OPENROWSET`/`OPENQUERY` geri alınmaz. **Güvenli taraf seçildi: bu belirteçlerden biri varsa analiz REDDEDİLİR** (exit 2, hangi belirteç olduğu söylenir); etkiyi bilerek kabul edersen `--allow-side-effects` ver. İki sağlayıcıda aynı bayrak ve aynı davranış. Tahmini plan (`--analyze`/`actual` yok) sorguyu çalıştırmadığı için denetime girmez. **Sınır:** denetim metin tabanlıdır; kullanıcı tanımlı fonksiyon/tetikleyici/view içindeki yan etkiler ve `INSERT`'in tükettiği identity/serial değerleri (rollback'ten sonra numara boşluğu) görülemez — "garanti" değil, "bilinen belirteçleri yakalar".
 - **`active-sessions` / `slow-queries`:** sütun şekli iki sağlayıcıda aynı (SessionId, Kullanici, Host, Program, Durum, Komut, WaitType, BlokeEden, CpuMs, GecenMs, Veritabani, Sorgu · Calistirma, ToplamMs, OrtalamaMs, CpuMs, MantiksalOkuma, SonCalistirma, Sorgu); PG'de karşılığı olmayan alanlar (CpuMs, SonCalistirma) NULL gelir. `--by` geçersizse iki tarafta da hata; `--by cpu` PG'de hata (pg_stat_statements CPU tutmaz).
 - **`slow-queries` (PG):** `pg_stat_statements` yoksa ya da `shared_preload_libraries`'te değilse net mesajla çıkar (exit 2).
 - **`kill`:** SQL Server'da yalnız-sorgu-iptali yok; `--terminate`'siz çağrıda not düşülür (KILL oturumu sonlandırır). Olmayan/yetkisiz session iki sağlayıcıda da aynı HATA + exit 2.
 - **Testler:** `ProviderParityTests` iki gerçek sunucuya karşı (SQL Server: `SQLCLI_TEST_SQL`; PG: `SQLCLI_TEST_PG`, `pg_stat_statements` kurulu olmalı) — sütun şekli eşitliği, explain actual geri alma, format davranışı.
 - **`kill` (PG):** pid yoksa/yetki yetmiyorsa PG `false` döner → hata + exit 2.
-- **`copy` (PG):** ham `COPY (sorgu) TO STDOUT (FORMAT BINARY)` → `COPY tablo (kolonlar) FROM STDIN (FORMAT BINARY)`. Kolon **tipleri kaynak/hedefte birebir aynı** olmalı (int4→int8 ikili COPY'de hata verir; mesaj bunu söyler). Yükleme + `--truncate` tek hedef transaction'ıdır (hata → hedef değişmez; SQL Server'daki `--atomic` PG'de hep geçerli). `--read-only` varsayılan açık ve kaynakta ayrıca `SET TRANSACTION READ ONLY`. `--check-constraints`/`--fire-triggers`/`--atomic` PG'de hep açık (verilirse not düşülür); `--batch`/`--partkey` verilirse uyarıyla belirtilir; `--param`/`--parallel` PG'de **reddedilir** (COPY parametre almaz, tek akış). `--tablock` PG'de karşılıksız (varsayılan değeri yüzünden algılanamaz, yok sayılır). Karışık çift (SQL Server↔PG) desteklenmez.
+- **`copy` (PG):** ham `COPY (sorgu) TO STDOUT (FORMAT BINARY)` → `COPY tablo (kolonlar) FROM STDIN (FORMAT BINARY)`. Kolon **tipleri kaynak/hedefte birebir aynı** olmalı (int4→int8 ikili COPY'de hata verir; mesaj bunu söyler). **Kendine kopya:** `--truncate` ile sorgu hedef tabloyu (view/join dahil) okuyorsa kaynak okuma kilidi TRUNCATE'i bekletip kilitlenme yaratırdı; artık `pg_locks` ile ölçülür ve TRUNCATE'ten önce hızlı hata verilir (v2.7.2) — önce ara tabloya kopyala. Yükleme + `--truncate` tek hedef transaction'ıdır (hata → hedef değişmez; SQL Server'daki `--atomic` PG'de hep geçerli). `--read-only` varsayılan açık ve kaynakta ayrıca `SET TRANSACTION READ ONLY`. `--check-constraints`/`--fire-triggers`/`--atomic` PG'de hep açık (verilirse not düşülür); `--batch`/`--partkey` verilirse uyarıyla belirtilir; `--param`/`--parallel` PG'de **reddedilir** (COPY parametre almaz, tek akış). `--tablock` PG'de karşılıksız (varsayılan değeri yüzünden algılanamaz, yok sayılır). Karışık çift (SQL Server↔PG) desteklenmez.
 
 ## Çıktı formatları
 
@@ -391,6 +394,11 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.7.2 (2026-11-06) — PR #4 Codex bulguları
+- `explain --analyze`/`actual`: geri alınamaz yan etkili sorgu (nextval, dblink, NOTIFY, SQL Server `NEXT VALUE FOR`/`EXEC`…) varsayılan **reddedilir**; `--allow-side-effects` ile bilerek geçilir. Etiket "değişiklikler geri alındı" yerine "tablo değişiklikleri geri alındı". İki sağlayıcıda aynı (`Core/YanEtkiDenetimi.cs`).
+- `copy` PG→PG `--truncate`: kaynak sorgu hedef tabloyu okuyorsa TRUNCATE kilitlenmesi yerine hızlı, anlaşılır hata (`pg_locks` ile ölçüm; view/join dahil).
+- Test: `DialectPerfTests` (belirteç tespiti, yanlış alarm yok, sunucusuz) + `ProviderParityTests` (kendine kopya reddi, farklı tabloya truncate çalışır).
 
 ### v2.7.1 (2026-11-05) — PostgreSQL perf komutları + `copy`
 - `explain` / `active-sessions` / `slow-queries` / `kill` PostgreSQL'de çalışır; SQL `ISqlDialect`'e taşındı (`ActiveSessionsSql`, `SlowQueriesSql`, `KillSql`, `ExplainAsync`) — komutlarda sağlayıcı dalı yok, SQL Server SQL'i aynen korundu.

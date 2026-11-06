@@ -39,6 +39,16 @@ public static class PostgresCopy
         }
         if (kolonlar.Count == 0) throw new InvalidOperationException("kaynak sorgu kolon döndürmüyor.");
 
+        // Kendine kopya kilitlenmesi: kaynak sorgu (view/join dahil) hedef tabloyu okuyorsa srcTx o tabloda
+        // AccessShareLock tutar ve COPY + hedef commit bitene dek bırakmaz; TRUNCATE (AccessExclusiveLock)
+        // aynı kilidi bekler → zaman aşımına kadar takılırdı. Kilit HEDEF'e dokunmadan, pg_locks'tan tam olarak
+        // ölçülür (metin eşlemesi view'i kaçırırdı) ve TRUNCATE'ten ÖNCE hızlı, anlaşılır hata verilir.
+        if (truncate && await KaynakHedefiKilitliyorMuAsync(src, dst, table, timeoutSeconds))
+            throw new InvalidOperationException(
+                $"copy kaynağı hedef tabloyu ({table}) okuyor ve --truncate AYNI veritabanında kendi kaynağını boşaltırdı " +
+                "(kaynak okuma kilidi TRUNCATE'i bekletir → kilitlenme). Tabloyu kendine kopyalama; " +
+                "önce başka bir ara tabloya kopyala ya da --truncate olmadan çalıştır.");
+
         await using var dstTx = await dst.BeginTransactionAsync();
         try
         {
@@ -63,6 +73,29 @@ public static class PostgresCopy
             try { await dstTx.RollbackAsync(); } catch { }
             throw;
         }
+    }
+
+    // Kaynak oturumu (pid) hedef veritabanında hedef tablo üzerinde kilit tutuyor mu? pg_locks küme geneli görünür;
+    // farklı veritabanı/kümedeki kaynak buraya hiçbir zaman eşleşmez (pid + database + relation üçlüsü).
+    private static async Task<bool> KaynakHedefiKilitliyorMuAsync(NpgsqlConnection src, NpgsqlConnection dst, string table, int timeoutSeconds)
+    {
+        int srcPid;
+        using (var p = src.CreateCommand())
+        {
+            p.CommandText = "SELECT pg_backend_pid()";
+            if (timeoutSeconds > 0) p.CommandTimeout = timeoutSeconds;
+            srcPid = Convert.ToInt32(await p.ExecuteScalarAsync());
+        }
+        using var cmd = dst.CreateCommand();
+        cmd.CommandText = @"SELECT EXISTS (
+                SELECT 1 FROM pg_locks l
+                WHERE l.locktype = 'relation' AND l.pid = @pid
+                  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                  AND l.relation = to_regclass(@tbl)::oid)";
+        cmd.Parameters.AddWithValue("pid", srcPid);
+        cmd.Parameters.AddWithValue("tbl", table);
+        if (timeoutSeconds > 0) cmd.CommandTimeout = timeoutSeconds;
+        return (bool)(await cmd.ExecuteScalarAsync())!;
     }
 
     private static async Task ExecAsync(NpgsqlConnection c, string sql, int timeoutSeconds)

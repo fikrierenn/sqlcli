@@ -74,4 +74,64 @@ public class DialectPerfTests
     {
         await Assert.ThrowsAsync<ArgumentException>(() => Pg.ExplainAsync(null!, "SELECT 1", actual: false, format: "yaml"));
     }
+
+    // ---- Yan etki denetimi (PR #4 Codex bulgusu): rollback sequence/dblink/NOTIFY'yi geri almaz ----
+    [Theory]
+    [InlineData("SELECT nextval('s')", "nextval")]
+    [InlineData("SELECT setval('s', 10)", "setval")]
+    [InlineData("SELECT * FROM dblink('x','select 1') t(a int)", "dblink")]
+    [InlineData("SELECT pg_notify('kanal','m')", "pg_notify")]
+    [InlineData("SELECT pg_advisory_lock(1)", "pg_advisory_lock")]
+    public void YanEtki_pg_belirtecleri_yakalanir(string sql, string beklenen)
+        => Assert.Contains(beklenen, YanEtkiDenetimi.Bul(sql, DbProvider.Postgres));
+
+    [Theory]
+    [InlineData("SELECT NEXT VALUE FOR dbo.Sira", "next value for")]
+    [InlineData("EXEC sp_who", "exec")]
+    [InlineData("SELECT * FROM OPENQUERY(LS, 'select 1')", "openquery")]
+    [InlineData("SELECT 1 WHERE 1 = (SELECT 1 FROM x) ; EXEC xp_cmdshell 'dir'", "xp_cmdshell")]
+    public void YanEtki_sqlserver_belirtecleri_yakalanir(string sql, string beklenen)
+        => Assert.Contains(beklenen, YanEtkiDenetimi.Bul(sql, DbProvider.SqlServer));
+
+    [Theory]
+    [InlineData("SELECT 1")]
+    [InlineData("SELECT 'nextval' AS metin")]                 // metin içi: yanlış alarm yok
+    [InlineData("SELECT 1 -- nextval('s')")]                  // yorum içi
+    [InlineData("SELECT nextval_kolonu FROM t")]              // ön ek: sözcük bütün eşleşir
+    [InlineData("SELECT next FROM t WHERE value = 1")]        // NEXT tek başına kolon
+    [InlineData("DELETE FROM t WHERE id = 1")]                // salt tablo yazması: rollback geri alır
+    public void YanEtki_zararsiz_sorgu_yakalanmaz(string sql)
+    {
+        Assert.Empty(YanEtkiDenetimi.Bul(sql, DbProvider.Postgres));
+        Assert.Empty(YanEtkiDenetimi.Bul(sql, DbProvider.SqlServer));
+    }
+
+    // Bağlantıya gitmeden: varsayılan RED, --allow-side-effects ile geçer (parite: iki dialect aynı).
+    [Fact]
+    public async Task Explain_analyze_yan_etkili_sorgu_varsayilan_reddedilir()
+    {
+        var pg = await Assert.ThrowsAsync<ArgumentException>(() => Pg.ExplainAsync(null!, "SELECT nextval('s')", actual: true, format: null));
+        var ms = await Assert.ThrowsAsync<ArgumentException>(() => Ms.ExplainAsync(null!, "SELECT NEXT VALUE FOR s", actual: true, format: null));
+        Assert.Contains("--allow-side-effects", pg.Message);
+        Assert.Contains("--allow-side-effects", ms.Message);
+    }
+
+    [Fact]
+    public async Task Explain_tahmini_plan_yan_etki_denetimine_girmez()
+    {
+        // actual=false sorguyu çalıştırmaz → guard devreye girmemeli (conn null olduğundan NullReference beklenir, ArgumentException DEĞİL).
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            try { await Pg.ExplainAsync(null!, "SELECT nextval('s')", actual: false, format: null); }
+            catch (ArgumentException) { throw new Xunit.Sdk.XunitException("tahmini planda guard çalıştı"); }
+        });
+    }
+
+    [Fact]
+    public void YanEtki_izin_bayragi_reddi_kaldirir()
+    {
+        Assert.NotNull(YanEtkiDenetimi.Denetle("SELECT nextval('s')", DbProvider.Postgres, izinVer: false));
+        Assert.Null(YanEtkiDenetimi.Denetle("SELECT nextval('s')", DbProvider.Postgres, izinVer: true));
+        Assert.Null(YanEtkiDenetimi.Denetle("SELECT 1", DbProvider.Postgres, izinVer: false));
+    }
 }
