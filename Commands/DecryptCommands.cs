@@ -55,7 +55,7 @@ public class DecryptCommands
         // OTOMATİK olarak uzak DAC'ı aç, yeniden dene ve iş bitince (finally) ESKİ HALİNE al.
         // --no-auto-dac ile bu otomatik açma kapatılır (yalnız dener).
         bool autoDac = !noAutoDac;
-        bool dacGeciciAcildi = false;
+        bool dacTempOpened = false;
 
         try
         {
@@ -64,24 +64,24 @@ public class DecryptCommands
         {
             await dac.OpenAsync();
         }
-        catch (SqlException ilkHata)
+        catch (SqlException firstError)
         {
             // DAC açılamadı. Otomatik açma kapalıysa ya da set'i açmak derde deva olmazsa: net hata.
-            bool acabildik = false;
+            bool couldOpen = false;
             if (autoDac)
             {
-                try { dacGeciciAcildi = await EnsureRemoteDacAsync(resolved.Effective); }
-                catch (Exception acHata)
+                try { dacTempOpened = await EnsureRemoteDacAsync(resolved.Effective); }
+                catch (Exception openError)
                 {
                     throw new CommandExitedException(
-                        DacHata(ilkHata) + $"\n  (otomatik açma da başarısız: {acHata.Message})", 2);
+                        DacError(firstError) + $"\n  (otomatik açma da başarısız: {openError.Message})", 2);
                 }
-                acabildik = dacGeciciAcildi;
+                couldOpen = dacTempOpened;
             }
 
-            if (!acabildik)
+            if (!couldOpen)
                 // Ya auto kapalı, ya da uzak DAC zaten AÇIKtı (başka bir sorun var: firewall/yetki).
-                throw new CommandExitedException(DacHata(ilkHata), 2);
+                throw new CommandExitedException(DacError(firstError), 2);
 
             // Setti biz açtık — DAC dinleyicisi hazır olana dek yeniden deneyerek aç.
             try
@@ -90,7 +90,7 @@ public class DecryptCommands
             }
             catch (SqlException ex2)
             {
-                throw new CommandExitedException(DacHata(ex2), 2);
+                throw new CommandExitedException(DacError(ex2), 2);
             }
         }
 
@@ -113,8 +113,8 @@ public class DecryptCommands
         if (!string.IsNullOrWhiteSpace(outDir))
             Directory.CreateDirectory(outDir!);
 
-        int ok = 0, atlanan = 0, hata = 0;
-        bool stdoutCok = string.IsNullOrWhiteSpace(outDir) && targets.Count > 1;
+        int ok = 0, skipped = 0, error = 0;
+        bool multiToStdout = string.IsNullOrWhiteSpace(outDir) && targets.Count > 1;
 
         foreach (var m in targets)
         {
@@ -132,7 +132,7 @@ public class DecryptCommands
                 {
                     var n = await TargetCharCountAsync(dac, m.ObjectId);
                     Info($"  [grey][[DRY-RUN]][/] {m.Schema}.{m.Name} ({m.Type}) — {n} karakter; ALTER çalıştırılmadı.");
-                    atlanan++;
+                    skipped++;
                     continue;
                 }
                 else
@@ -147,7 +147,7 @@ public class DecryptCommands
                     if (File.Exists(path) && !overwrite)
                     {
                         Info($"    [yellow]var, atlandı[/] (--overwrite ile yaz): {Markup.Escape(path)}");
-                        atlanan++;
+                        skipped++;
                         continue;
                     }
                     await File.WriteAllTextAsync(path, sql, new UTF8Encoding(false));
@@ -155,25 +155,25 @@ public class DecryptCommands
                 }
                 else
                 {
-                    if (stdoutCok) Console.Out.WriteLine($"-- ===== {m.Schema}.{m.Name} =====");
+                    if (multiToStdout) Console.Out.WriteLine($"-- ===== {m.Schema}.{m.Name} =====");
                     Console.Out.WriteLine(sql);
-                    if (stdoutCok) Console.Out.WriteLine("GO");
+                    if (multiToStdout) Console.Out.WriteLine("GO");
                 }
                 ok++;
             }
             catch (Exception ex)
             {
-                hata++;
+                error++;
                 Info($"  [red]✗ {Markup.Escape(m.Schema)}.{Markup.Escape(m.Name)}: {Markup.Escape(ex.Message)}[/]");
             }
         }
 
-        Info($"\n[grey]Bitti — çözüldü:{ok} atlandı:{atlanan} hata:{hata}[/]");
-        if (hata > 0 && ok == 0) throw new CommandExitedException(1);
+        Info($"\n[grey]Bitti — çözüldü:{ok} atlandı:{skipped} hata:{error}[/]");
+        if (error > 0 && ok == 0) throw new CommandExitedException(1);
         }
         finally
         {
-            if (dacGeciciAcildi) await TryDisableRemoteDacAsync(resolved.Effective);
+            if (dacTempOpened) await TryDisableRemoteDacAsync(resolved.Effective);
         }
     }
 
@@ -215,11 +215,11 @@ public class DecryptCommands
     // RECONFIGURE sonrası DAC dinleyicisi hazır olana dek kısa yeniden deneme.
     private static async Task OpenDacWithRetryAsync(SqlConnection dac, bool enableDac)
     {
-        var deneme = enableDac ? 4 : 1;
+        var attempt = enableDac ? 4 : 1;
         for (int i = 1; ; i++)
         {
             try { await dac.OpenAsync(); return; }
-            catch (SqlException) when (i < deneme)
+            catch (SqlException) when (i < attempt)
             {
                 if (dac.State != System.Data.ConnectionState.Closed) { try { await dac.CloseAsync(); } catch { } }
                 await Task.Delay(1000);
@@ -396,7 +396,7 @@ public class DecryptCommands
             connStr, @"Password=[^;]+", "Password=***",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-    private static string DacHata(SqlException ex) =>
+    private static string DacError(SqlException ex) =>
         "DAC (Dedicated Admin Connection) açılamadı: " + ex.Message.Split('\n')[0] + "\n" +
         "  • Uzak DAC kapalı olabilir. Sunucuda: EXEC sp_configure 'remote admin connections', 1; RECONFIGURE;\n" +
         "  • DAC yalnız TEK oturuma izin verir — başka bir DAC açıksa kapatın.\n" +

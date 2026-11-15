@@ -76,10 +76,10 @@ public static class DecryptCore
                 $"Uzunluk uyuşmazlığı — çözme iptal: hedef_şifreli={cipherTarget.Length}, " +
                 $"kukla_şifreli={cipherDummy.Length}, kukla_düz={plainDummy.Length} bayt.");
 
-        var sonuc = new byte[cipherTarget.Length];
-        for (int i = 0; i < sonuc.Length; i++)
-            sonuc[i] = (byte)(cipherTarget[i] ^ cipherDummy[i] ^ plainDummy[i]);
-        return sonuc;
+        var result = new byte[cipherTarget.Length];
+        for (int i = 0; i < result.Length; i++)
+            result[i] = (byte)(cipherTarget[i] ^ cipherDummy[i] ^ plainDummy[i]);
+        return result;
     }
 
     /// <summary>Çözülmüş UCS-2 (UTF-16LE) baytlarını metne çevirir.</summary>

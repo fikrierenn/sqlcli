@@ -30,63 +30,63 @@ public static class ParamsCommands
         if (param == null || param.Length == 0) return null;
 
         var p = new DynamicParameters();
-        foreach (var ham in param)
+        foreach (var raw in param)
         {
-            var i = ham.IndexOf('=');
+            var i = raw.IndexOf('=');
             if (i <= 0)
                 throw new ArgumentException(
-                    $"--param biçimi 'ad=deger' ya da 'ad:tip=deger' olmalı: '{ham}'");
+                    $"--param biçimi 'ad=deger' ya da 'ad:tip=deger' olmalı: '{raw}'");
 
-            var solTaraf = ham[..i].Trim().TrimStart('@');
-            var deger = ham[(i + 1)..];
+            var leftSide = raw[..i].Trim().TrimStart('@');
+            var value = raw[(i + 1)..];
 
-            string ad = solTaraf, tip = "";
-            var iki = solTaraf.IndexOf(':');
-            if (iki > 0)
+            string paramName = leftSide, typeName = "";
+            var colonIndex = leftSide.IndexOf(':');
+            if (colonIndex > 0)
             {
-                ad = solTaraf[..iki].Trim();
-                tip = solTaraf[(iki + 1)..].Trim().ToLowerInvariant();
+                paramName = leftSide[..colonIndex].Trim();
+                typeName = leftSide[(colonIndex + 1)..].Trim().ToLowerInvariant();
             }
 
-            switch (tip)
+            switch (typeName)
             {
                 case "":
                     // Tip verilmedi: tam sayı → ondalık → metin. Tarih tanınmaz (bilinçli).
-                    if (long.TryParse(deger, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tam))
-                        p.Add(ad, tam);
-                    else if (decimal.TryParse(deger, NumberStyles.Any, CultureInfo.InvariantCulture, out var ond))
-                        p.Add(ad, ond);
+                    if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var whole))
+                        p.Add(paramName, whole);
+                    else if (decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var decimalValue))
+                        p.Add(paramName, decimalValue);
                     else
-                        p.Add(ad, deger);
+                        p.Add(paramName, value);
                     break;
 
                 case "str" or "string" or "text":
-                    p.Add(ad, deger);
+                    p.Add(paramName, value);
                     break;
 
                 case "int" or "bigint":
-                    p.Add(ad, long.Parse(deger, CultureInfo.InvariantCulture));
+                    p.Add(paramName, long.Parse(value, CultureInfo.InvariantCulture));
                     break;
 
                 case "dec" or "decimal" or "num":
-                    p.Add(ad, decimal.Parse(deger, NumberStyles.Any, CultureInfo.InvariantCulture));
+                    p.Add(paramName, decimal.Parse(value, NumberStyles.Any, CultureInfo.InvariantCulture));
                     break;
 
                 case "date" or "datetime":
-                    p.Add(ad, TarihCoz(deger, ad), tip == "date" ? System.Data.DbType.Date : System.Data.DbType.DateTime2);
+                    p.Add(paramName, ParseDate(value, paramName), typeName == "date" ? System.Data.DbType.Date : System.Data.DbType.DateTime2);
                     break;
 
                 case "bool" or "bit":
-                    p.Add(ad, bool.Parse(deger));
+                    p.Add(paramName, bool.Parse(value));
                     break;
 
                 case "guid" or "uniqueidentifier":
-                    p.Add(ad, Guid.Parse(deger));
+                    p.Add(paramName, Guid.Parse(value));
                     break;
 
                 default:
                     throw new ArgumentException(
-                        $"--param bilinmeyen tip ':{tip}' ({ad}). Geçerli: str, int, dec, date, datetime, bool, guid.");
+                        $"--param bilinmeyen tip ':{typeName}' ({paramName}). Geçerli: str, int, dec, date, datetime, bool, guid.");
             }
         }
         return p;
@@ -97,15 +97,15 @@ public static class ParamsCommands
     /// `yyyy-MM-dd HH:mm[:ss]`. `01.02.2026` gibi biçim REDDEDİLİR — gün/ay sırası
     /// belirsizdir ve sessiz yanlış gün seçmek en pahalı hata sınıfıdır.
     /// </summary>
-    private static DateTime TarihCoz(string deger, string ad)
+    private static DateTime ParseDate(string value, string paramName)
     {
-        string[] kalip = ["yyyy-MM-dd", "yyyyMMdd", "yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss"];
-        if (DateTime.TryParseExact(deger, kalip, CultureInfo.InvariantCulture,
+        string[] patterns = ["yyyy-MM-dd", "yyyyMMdd", "yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss"];
+        if (DateTime.TryParseExact(value, patterns, CultureInfo.InvariantCulture,
                 DateTimeStyles.None, out var t))
             return t;
 
         throw new ArgumentException(
-            $"--param {ad}:date değeri belirsiz biçimde: '{deger}'. " +
+            $"--param {paramName}:date değeri belirsiz biçimde: '{value}'. " +
             "Kabul edilen: yyyy-MM-dd, yyyyMMdd, yyyy-MM-dd HH:mm[:ss]. " +
             "dd.MM.yyyy KABUL EDİLMEZ (gün/ay sırası belirsiz) — ISO yaz ya da :str kullanıp " +
             "dönüşümü SQL'de açıkça belirt (CONVERT(date, @x, 104)).");

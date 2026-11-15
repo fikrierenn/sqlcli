@@ -74,10 +74,10 @@ public static class SqlExecutor
     /// <param name="retry">Geçici hatada ek deneme sayısı (0 = yok). Her deneme görünür.</param>
     public static async Task<DataTable> RunQueryAsync(
         string connStr, string sql, object? parameters, int timeoutSeconds, int retry,
-        Action<string>? bildir)
+        Action<string>? notify)
     {
-        bildir ??= m => AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(m)}[/]");
-        return await TransientErrors.YenidenDeneAsync(async () =>
+        notify ??= m => AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(m)}[/]");
+        return await TransientErrors.RetryAsync(async () =>
         {
             await using var conn = await ConnectionResolver.OpenAsync(connStr);
             var cmd = new CommandDefinition(
@@ -87,23 +87,23 @@ public static class SqlExecutor
             var table = new DataTable();
             table.Load(reader);
             return table;
-        }, retry, bildir);
+        }, retry, notify);
     }
 
     /// <summary>İlk satır/ilk kolon — assert ve sayım için. NULL/satırsız → null.</summary>
     public static async Task<object?> ScalarAsync(
         string connStr, string sql, object? parameters = null, int timeoutSeconds = 0,
-        int retry = 0, Action<string>? bildir = null)
+        int retry = 0, Action<string>? notify = null)
     {
-        bildir ??= m => AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(m)}[/]");
-        return await TransientErrors.YenidenDeneAsync(async () =>
+        notify ??= m => AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(m)}[/]");
+        return await TransientErrors.RetryAsync(async () =>
         {
             await using var conn = await ConnectionResolver.OpenAsync(connStr);
             var cmd = new CommandDefinition(
                 sql, parameters,
                 commandTimeout: timeoutSeconds > 0 ? timeoutSeconds : null);
-            var deger = await conn.ExecuteScalarAsync<object?>(cmd);
-            return deger is DBNull ? null : deger;
-        }, retry, bildir);
+            var value = await conn.ExecuteScalarAsync<object?>(cmd);
+            return value is DBNull ? null : value;
+        }, retry, notify);
     }
 }

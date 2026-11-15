@@ -15,7 +15,7 @@ public class IntrospectCommands
     }
 
     [Command("tablolar", Description = "Tablo listesi (alias: list-tables, tables)")]
-    public async Task Tablolar([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
+    public async Task Tables([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
     {
         var r = Resolve(conn, profile);
         await Run(r, r.Dialect.TablesSql, format);
@@ -23,11 +23,11 @@ public class IntrospectCommands
 
     [Command("tables", Description = "Tablo listesi (alias)")]
     public Task TablesAlias([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
-        => Tablolar(conn, profile, format);
+        => Tables(conn, profile, format);
 
     [Command("list-tables", Description = "Tablo listesi (alias)")]
     public Task ListTables([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
-        => Tablolar(conn, profile, format);
+        => Tables(conn, profile, format);
 
     [Command("rows", Description = "Tüm tablolardaki satır sayıları (alias: satir-sayisi)")]
     public async Task Rows([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
@@ -37,29 +37,29 @@ public class IntrospectCommands
     }
 
     [Command("satir-sayisi", Description = "rows alias")]
-    public Task SatirSayisi([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
+    public Task RowCount([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
         => Rows(conn, profile, format);
 
     [Command("fk-kontrol", Description = "Foreign key listesi")]
-    public async Task FkKontrol([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
+    public async Task FkCheck([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
     {
         var r = Resolve(conn, profile);
         await Run(r, r.Dialect.FkSql, format);
     }
 
     [Command("indexler", Description = "Index listesi (alias: indexes)")]
-    public async Task Indexler([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
+    public async Task Indexes([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
     {
         var r = Resolve(conn, profile);
         await Run(r, r.Dialect.IndexesSql, format);
     }
 
     [Command("indexes", Description = "indexler alias")]
-    public Task Indexes([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
-        => Indexler(conn, profile, format);
+    public Task IndexesAlias([Option] string? conn = null, [Option] string? profile = null, [Option] string format = "table")
+        => Indexes(conn, profile, format);
 
     [Command("baglanti", Description = "Aktif bağlantı bilgisi (alias: conn-info)")]
-    public async Task Baglanti([Option] string? conn = null, [Option] string? profile = null)
+    public async Task Connection([Option] string? conn = null, [Option] string? profile = null)
     {
         var r = Resolve(conn, profile);
         AnsiConsole.MarkupLine($"\n[cyan]Profil:[/] {Markup.Escape(r.ProfileName ?? "default")}");

@@ -17,7 +17,7 @@ namespace SqlCli.Core;
 public static class TransientErrors
 {
     // SQL Server hata numaraları (geçici sınıf).
-    private static readonly int[] GeciciKodlar =
+    private static readonly int[] TransientCodes =
     [
         -2,      // komut zaman aşımı (client)
         20,      // instance'a bağlanılamadı
@@ -31,11 +31,11 @@ public static class TransientErrors
         10928, 10929, 40197, 40501, 40613, 49918, 49919, 49920, // Azure throttle/failover
     ];
 
-    public static bool Gecici(DbException ex)
+    public static bool IsTransient(DbException ex)
     {
         // Sağlayıcıdan bağımsız kod okuma (Dialects.ErrorCode aynı işi UI için yapıyor).
-        var kod = KodBul(ex);
-        if (kod.HasValue && Array.IndexOf(GeciciKodlar, kod.Value) >= 0) return true;
+        var kod = FindCode(ex);
+        if (kod.HasValue && Array.IndexOf(TransientCodes, kod.Value) >= 0) return true;
 
         // Kod okunamadığında mesaja bak — ağ sınıfı ifadeler geçici sayılır.
         var m = ex.Message.ToLowerInvariant();
@@ -45,7 +45,7 @@ public static class TransientErrors
             || m.Contains("semaphore timeout");
     }
 
-    private static int? KodBul(DbException ex)
+    private static int? FindCode(DbException ex)
     {
         var t = ex.GetType();
         var p = t.GetProperty("Number") ?? t.GetProperty("ErrorCode");
@@ -57,26 +57,26 @@ public static class TransientErrors
     /// İşi en fazla (1 + ekDeneme) kez çalıştırır; yalnız geçici hatada bekleyip yeniden dener.
     /// Her yeniden deneme <paramref name="bildir"/> ile GÖRÜNÜR kılınır (sessiz retry yok).
     /// </summary>
-    public static async Task<T> YenidenDeneAsync<T>(
-        Func<Task<T>> is_, int ekDeneme, Action<string> bildir)
+    public static async Task<T> RetryAsync<T>(
+        Func<Task<T>> is_, int extraAttempts, Action<string> notify)
     {
-        DbException? son = null;
-        for (int deneme = 0; deneme <= Math.Max(0, ekDeneme); deneme++)
+        DbException? last = null;
+        for (int attempt = 0; attempt <= Math.Max(0, extraAttempts); attempt++)
         {
             try
             {
-                if (deneme > 0)
-                    bildir($"geçici hata sonrası {deneme}. yeniden deneme…");
+                if (attempt > 0)
+                    notify($"geçici hata sonrası {attempt}. yeniden deneme…");
                 return await is_();
             }
-            catch (DbException ex) when (Gecici(ex) && deneme < ekDeneme)
+            catch (DbException ex) when (IsTransient(ex) && attempt < extraAttempts)
             {
-                son = ex;
-                bildir($"GEÇİCİ HATA ({KodBul(ex)?.ToString() ?? "?"}): {ex.Message.Split('\n')[0]}");
-                await Task.Delay(TimeSpan.FromSeconds(2 * (deneme + 1)));
+                last = ex;
+                notify($"GEÇİCİ HATA ({FindCode(ex)?.ToString() ?? "?"}): {ex.Message.Split('\n')[0]}");
+                await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)));
             }
         }
-        if (son != null) throw son;
+        if (last != null) throw last;
         throw new InvalidOperationException("YenidenDeneAsync: beklenmeyen akış");
     }
 }

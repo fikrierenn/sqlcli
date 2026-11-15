@@ -17,43 +17,43 @@ public class DecryptTests
         return r;
     }
 
-    private static byte[] SahteKeystream(int uzunluk, int seed)
+    private static byte[] FakeKeystream(int byteLength, int seed)
     {
         var rng = new Random(seed);
-        var k = new byte[uzunluk];
+        var k = new byte[byteLength];
         rng.NextBytes(k);
         return k;
     }
 
     [Fact]
-    public void BilinenDuzMetin_XOR_ozgunTanimiGeriGetirir()
+    public void KnownPlainText_XOR_recovers_original_definition()
     {
         // "Gerçek" (şifreli saklanan) proc tanımı — SQL CREATE biçiminde saklar.
-        var ozgun =
+        var original =
             "CREATE PROCEDURE [dbo].[sip_sevkisle] @eID int WITH ENCRYPTION AS\n" +
             " BEGIN\n\tSELECT @eID\n\tRETURN 0\n END  ";
-        var duzHedef = Encoding.Unicode.GetBytes(ozgun);
-        int storedCharCount = ozgun.Length;
+        var plainTarget = Encoding.Unicode.GetBytes(original);
+        int storedCharCount = original.Length;
 
         // Nesneye bağlı (içerikten bağımsız) sabit anahtar akışı.
-        var K = SahteKeystream(duzHedef.Length, seed: 1234);
-        var sifreliHedef = Xor(duzHedef, K);
+        var K = FakeKeystream(plainTarget.Length, seed: 1234);
+        var encryptedTarget = Xor(plainTarget, K);
 
         // Komutun yapacağı: aynı SAKLANAN uzunlukta kukla üret, SAKLANAN (CREATE) metnini AYNI K ile şifrele.
-        var kukla = DecryptCore.BuildDummyModule("P", "[dbo].[sip_sevkisle]", null, storedCharCount);
-        Assert.StartsWith("ALTER", kukla.SubmitSql);          // gönderilen ALTER
-        Assert.StartsWith("CREATE", kukla.StoredPlain);       // saklanan CREATE
-        Assert.Equal(storedCharCount, kukla.StoredPlain.Length);
-        Assert.Equal(storedCharCount - 1, kukla.SubmitSql.Length);
+        var dummy = DecryptCore.BuildDummyModule("P", "[dbo].[sip_sevkisle]", null, storedCharCount);
+        Assert.StartsWith("ALTER", dummy.SubmitSql);          // gönderilen ALTER
+        Assert.StartsWith("CREATE", dummy.StoredPlain);       // saklanan CREATE
+        Assert.Equal(storedCharCount, dummy.StoredPlain.Length);
+        Assert.Equal(storedCharCount - 1, dummy.SubmitSql.Length);
 
-        var duzKukla = DecryptCore.EncodeUcs2(kukla.StoredPlain);
-        Assert.Equal(sifreliHedef.Length, duzKukla.Length);   // UCS-2 hizası
-        var sifreliKukla = Xor(duzKukla, K);
+        var plainDummyText = DecryptCore.EncodeUcs2(dummy.StoredPlain);
+        Assert.Equal(encryptedTarget.Length, plainDummyText.Length);   // UCS-2 hizası
+        var encryptedDummy = Xor(plainDummyText, K);
 
-        var cozulen = DecryptCore.DecodeUcs2(
-            DecryptCore.XorRecover(sifreliHedef, sifreliKukla, duzKukla));
+        var decrypted = DecryptCore.DecodeUcs2(
+            DecryptCore.XorRecover(encryptedTarget, encryptedDummy, plainDummyText));
 
-        Assert.Equal(ozgun, cozulen);
+        Assert.Equal(original, decrypted);
     }
 
     [Theory]
@@ -63,11 +63,11 @@ public class DecryptTests
     [InlineData("IF", "[dbo].[tf_inline]", null)]
     [InlineData("TF", "[dbo].[tf_multi]", null)]
     [InlineData("TR", "[dbo].[trg]", "[dbo].[tablo]")]
-    public void Kukla_saklananTamUzunluk_gonderilenBirEksik(string tur, string q, string? parent)
+    public void Dummy_storedFullLength_sentOneLess(string kind, string q, string? parent)
     {
         for (int n = 400; n <= 420; n++)   // iskeletten büyük birkaç uzunluk
         {
-            var d = DecryptCore.BuildDummyModule(tur, q, parent, n);
+            var d = DecryptCore.BuildDummyModule(kind, q, parent, n);
             Assert.Equal(n, d.StoredPlain.Length);        // saklanan (CREATE) tam uzunluk
             Assert.Equal(n - 1, d.SubmitSql.Length);      // gönderilen (ALTER) bir eksik
             Assert.StartsWith("CREATE", d.StoredPlain);
@@ -76,28 +76,28 @@ public class DecryptTests
     }
 
     [Fact]
-    public void Kukla_cokKisaHedefte_hataVerir()
+    public void Dummy_tooShortTarget_throws()
     {
         Assert.Throws<InvalidOperationException>(
             () => DecryptCore.BuildDummyModule("P", "[dbo].[x]", null, 3));
     }
 
     [Fact]
-    public void Kukla_triggerParentYoksa_hataVerir()
+    public void Dummy_triggerParentMissing_throws()
     {
         Assert.Throws<InvalidOperationException>(
             () => DecryptCore.BuildDummyModule("TR", "[dbo].[trg]", null, 500));
     }
 
     [Fact]
-    public void Kukla_bilinmeyenTur_hataVerir()
+    public void Dummy_unknownKind_throws()
     {
         Assert.Throws<NotSupportedException>(
             () => DecryptCore.BuildDummyModule("XX", "[dbo].[x]", null, 500));
     }
 
     [Fact]
-    public void XorRecover_uzunlukUyusmazsa_hataVerir()
+    public void XorRecover_lengthMismatch_throws()
     {
         Assert.Throws<InvalidOperationException>(
             () => DecryptCore.XorRecover(new byte[10], new byte[10], new byte[8]));
@@ -109,6 +109,6 @@ public class DecryptTests
     [InlineData("RDSTEST", null, "admin:RDSTEST")]
     [InlineData("tcp:HOST\\SQLEXPRESS", null, "admin:HOST\\SQLEXPRESS")]  // instance korunur
     [InlineData("admin:HOST", null, "admin:HOST")]                  // iki kez önek eklenmez
-    public void DacDataSource_dogruKurulur(string girdi, int? port, string beklenen)
-        => Assert.Equal(beklenen, DecryptCore.BuildDacDataSource(girdi, port));
+    public void DacDataSource_builtCorrectly(string girdi, int? port, string expected)
+        => Assert.Equal(expected, DecryptCore.BuildDacDataSource(girdi, port));
 }

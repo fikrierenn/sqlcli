@@ -17,9 +17,9 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
     private static readonly string Pg = Environment.GetEnvironmentVariable("SQLCLI_TEST_PG")
         ?? "Host=localhost;Username=postgres;Database=postgres";
 
-    public ProviderParityTests(SqlFixture f) => _ms = f.Kaynak;
+    public ProviderParityTests(SqlFixture f) => _ms = f.Source;
 
-    private static async Task<DataTable> Tablo(string cs, string sql)
+    private static async Task<DataTable> TableName(string cs, string sql)
     {
         await using var c = await ConnectionResolver.OpenAsync(cs);
         using var cmd = c.CreateCommand();
@@ -30,7 +30,7 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
         return dt;
     }
 
-    private static string[] Kolonlar(DataTable dt) => dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray();
+    private static string[] ColumnList(DataTable dt) => dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray();
 
     private static async Task Exec(string cs, string sql)
     {
@@ -40,35 +40,35 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private static async Task<long> Say(string cs, string sql)
-        => Convert.ToInt64((await Tablo(cs, sql)).Rows[0][0]);
+    private static async Task<long> CountRows(string cs, string sql)
+        => Convert.ToInt64((await TableName(cs, sql)).Rows[0][0]);
 
     [Fact]
-    public async Task ActiveSessions_ayni_kolonlar()
+    public async Task ActiveSessions_same_columns()
     {
-        var ms = Kolonlar(await Tablo(_ms, new SqlServerDialect().ActiveSessionsSql));
-        var pg = Kolonlar(await Tablo(Pg, new PostgresDialect().ActiveSessionsSql));
+        var ms = ColumnList(await TableName(_ms, new SqlServerDialect().ActiveSessionsSql));
+        var pg = ColumnList(await TableName(Pg, new PostgresDialect().ActiveSessionsSql));
         Assert.Equal(ms, pg);
     }
 
     [Fact]
-    public async Task SlowQueries_ayni_kolonlar()
+    public async Task SlowQueries_same_columns()
     {
-        var ms = Kolonlar(await Tablo(_ms, new SqlServerDialect().SlowQueriesSql(5, "avg")));
-        var pg = Kolonlar(await Tablo(Pg, new PostgresDialect().SlowQueriesSql(5, "avg")));
+        var ms = ColumnList(await TableName(_ms, new SqlServerDialect().SlowQueriesSql(5, "avg")));
+        var pg = ColumnList(await TableName(Pg, new PostgresDialect().SlowQueriesSql(5, "avg")));
         Assert.Equal(ms, pg);
     }
 
     [Theory]
     [InlineData("avg")] [InlineData("total")] [InlineData("reads")] [InlineData("executions")]
-    public async Task SlowQueries_ortak_siralamalar_iki_tarafta_kosar(string by)
+    public async Task SlowQueries_common_orderings_run_on_both(string by)
     {
-        await Tablo(_ms, new SqlServerDialect().SlowQueriesSql(3, by));
-        await Tablo(Pg, new PostgresDialect().SlowQueriesSql(3, by));
+        await TableName(_ms, new SqlServerDialect().SlowQueriesSql(3, by));
+        await TableName(Pg, new PostgresDialect().SlowQueriesSql(3, by));
     }
 
     [Fact]
-    public void SlowQueries_gecersiz_by_iki_tarafta_hata_cpu_yalniz_pgde_hata()
+    public void SlowQueries_invalid_by_errors_on_both_cpu_errors_only_on_pg()
     {
         Assert.Throws<ArgumentException>(() => new SqlServerDialect().SlowQueriesSql(3, "bogus"));
         Assert.Throws<ArgumentException>(() => new PostgresDialect().SlowQueriesSql(3, "bogus"));
@@ -80,7 +80,7 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
     [Theory]
     [InlineData(false)]   // SQL Server
     [InlineData(true)]    // PostgreSQL
-    public async Task Explain_actual_yazmayi_geri_alir(bool pg)
+    public async Task Explain_actual_rolls_back_writes(bool pg)
     {
         var cs = pg ? Pg : _ms;
         ISqlDialect d = pg ? new PostgresDialect() : new SqlServerDialect();
@@ -93,7 +93,7 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
             var r = await d.ExplainAsync(c, $"DELETE FROM {t}", actual: true, format: null);
             Assert.NotEmpty(r.Plans);
             Assert.All(r.Plans, p => Assert.False(string.IsNullOrWhiteSpace(p)));
-            Assert.Equal(3, await Say(cs, $"SELECT COUNT(*) FROM {t}"));   // silinmedi
+            Assert.Equal(3, await CountRows(cs, $"SELECT COUNT(*) FROM {t}"));   // silinmedi
         }
         finally { await Exec(cs, $"DROP TABLE IF EXISTS {t}"); }
     }
@@ -101,7 +101,7 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Explain_tahmini_plan_doner_ve_calistirmaz(bool pg)
+    public async Task Explain_estimated_plan_returns_without_running(bool pg)
     {
         var cs = pg ? Pg : _ms;
         ISqlDialect d = pg ? new PostgresDialect() : new SqlServerDialect();
@@ -112,7 +112,7 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
     }
 
     [Fact]
-    public async Task Explain_format_destegi_sessiz_yok_sayilmaz()
+    public async Task Explain_format_support_not_silently_ignored()
     {
         await using var ms = await ConnectionResolver.OpenAsync(_ms);
         await using var pg = await ConnectionResolver.OpenAsync(Pg);
@@ -125,9 +125,9 @@ public class ProviderParityTests : IClassFixture<SqlFixture>
     }
 
     [Fact]
-    public async Task Kill_pg_olmayan_pid_false_doner()
+    public async Task Kill_pg_missing_pid_returns_false()
     {
-        var sonuc = (await Tablo(Pg, new PostgresDialect().KillSql(2147483000, hard: false))).Rows[0][0];
-        Assert.Equal(false, sonuc);
+        var result = (await TableName(Pg, new PostgresDialect().KillSql(2147483000, hard: false))).Rows[0][0];
+        Assert.Equal(false, result);
     }
 }

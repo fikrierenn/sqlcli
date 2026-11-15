@@ -40,25 +40,25 @@ public class AssertCommands
         [Option] string? conn = null,
         [Option] string? profile = null)
     {
-        var ad = label ?? "assert";
+        var paramName = label ?? "assert";
 
-        var kosullar = new List<(string Ad, string Deger)>();
-        if (eq != null) kosullar.Add(("eq", eq));
-        if (ne != null) kosullar.Add(("ne", ne));
-        if (ge != null) kosullar.Add(("ge", ge));
-        if (le != null) kosullar.Add(("le", le));
-        if (gt != null) kosullar.Add(("gt", gt));
-        if (lt != null) kosullar.Add(("lt", lt));
-        if (kosullar.Count == 0)
+        var conditions = new List<(string Name, string Value)>();
+        if (eq != null) conditions.Add(("eq", eq));
+        if (ne != null) conditions.Add(("ne", ne));
+        if (ge != null) conditions.Add(("ge", ge));
+        if (le != null) conditions.Add(("le", le));
+        if (gt != null) conditions.Add(("gt", gt));
+        if (lt != null) conditions.Add(("lt", lt));
+        if (conditions.Count == 0)
         {
             AnsiConsole.MarkupLine("[red]HATA:[/] en az bir beklenti gerekli (--eq/--ne/--ge/--le/--gt/--lt).");
             throw new CommandExitedException(2);
         }
 
-        var yasak = SqlGuard.Denetle(sql, readOnly);
-        if (yasak != null)
+        var forbidden = SqlGuard.Check(sql, readOnly);
+        if (forbidden != null)
         {
-            AnsiConsole.MarkupLine($"[red]REDDEDİLDİ:[/] {Markup.Escape(yasak)}");
+            AnsiConsole.MarkupLine($"[red]REDDEDİLDİ:[/] {Markup.Escape(forbidden)}");
             throw new CommandExitedException(2);
         }
 
@@ -69,45 +69,45 @@ public class AssertCommands
             throw new CommandExitedException(2);
         }
 
-        object? olculen;
+        object? measured;
         try
         {
-            olculen = await SqlExecutor.ScalarAsync(
+            measured = await SqlExecutor.ScalarAsync(
                 r.ConnectionString, sql, ParamsCommands.Build(param), timeout, retry,
                 m => AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(m)}[/]"));
         }
         catch (Exception ex)
         {
             // KOŞAMADI ≠ KIRIK. Ayrı çıkış kodu (2) ile bildirilir; yeşil sayılmaz.
-            AnsiConsole.MarkupLine($"[red]KOŞAMADI[/] [cyan]{Markup.Escape(ad)}[/] — {Markup.Escape(ex.Message.Split('\n')[0])}");
+            AnsiConsole.MarkupLine($"[red]KOŞAMADI[/] [cyan]{Markup.Escape(paramName)}[/] — {Markup.Escape(ex.Message.Split('\n')[0])}");
             throw new CommandExitedException(2);
         }
 
-        var sayi = SayiyaCevir(olculen);
-        var kirik = new List<string>();
-        foreach (var (kAd, kDeger) in kosullar)
+        var number = ToNumber(measured);
+        var failing = new List<string>();
+        foreach (var (condName, condValue) in conditions)
         {
-            bool gecti = Karsilastir(kAd, olculen, sayi, kDeger);
-            if (!gecti) kirik.Add($"{kAd} {kDeger}");
+            bool passed = Compare(condName, measured, number, condValue);
+            if (!passed) failing.Add($"{condName} {condValue}");
         }
 
-        var gosterim = olculen?.ToString() ?? "NULL";
-        if (kirik.Count == 0)
+        var display = measured?.ToString() ?? "NULL";
+        if (failing.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[green]OK[/]    [cyan]{Markup.Escape(ad)}[/] = {Markup.Escape(gosterim)} " +
-                                   $"[grey]({string.Join(" ve ", kosullar.Select(k => k.Ad + " " + k.Deger))})[/]");
+            AnsiConsole.MarkupLine($"[green]OK[/]    [cyan]{Markup.Escape(paramName)}[/] = {Markup.Escape(display)} " +
+                                   $"[grey]({string.Join(" ve ", conditions.Select(k => k.Name + " " + k.Value))})[/]");
             return;
         }
 
-        AnsiConsole.MarkupLine($"[red]KIRIK[/] [cyan]{Markup.Escape(ad)}[/] = {Markup.Escape(gosterim)} " +
-                               $"[grey](beklenen: {string.Join(" ve ", kirik)})[/]");
+        AnsiConsole.MarkupLine($"[red]KIRIK[/] [cyan]{Markup.Escape(paramName)}[/] = {Markup.Escape(display)} " +
+                               $"[grey](beklenen: {string.Join(" ve ", failing)})[/]");
         if (!string.IsNullOrWhiteSpace(why))
             AnsiConsole.MarkupLine($"      [yellow]NEDEN ÖNEMLİ:[/] {Markup.Escape(why)}");
         AnsiConsole.MarkupLine("      [grey]Veri değişmiş olabilir — önce ÖLÇ, sonra ya kodu ya beklentiyi düzelt.[/]");
         throw new CommandExitedException(1);
     }
 
-    private static decimal? SayiyaCevir(object? v)
+    private static decimal? ToNumber(object? v)
     {
         if (v == null) return null;
         if (v is bool b) return b ? 1 : 0;
@@ -115,31 +115,31 @@ public class AssertCommands
         catch { return null; }
     }
 
-    private static bool Karsilastir(string op, object? olculen, decimal? sayi, string beklenen)
+    private static bool Compare(string op, object? measured, decimal? number, string expected)
     {
-        var bSayi = decimal.TryParse(beklenen, NumberStyles.Any, CultureInfo.InvariantCulture, out var bd)
+        var bNumber = decimal.TryParse(expected, NumberStyles.Any, CultureInfo.InvariantCulture, out var bd)
             ? bd : (decimal?)null;
 
         // Sayısal karşılaştırma mümkünse sayısal; değilse metin (eq/ne için).
-        if (sayi.HasValue && bSayi.HasValue)
+        if (number.HasValue && bNumber.HasValue)
         {
             return op switch
             {
-                "eq" => sayi.Value == bSayi.Value,
-                "ne" => sayi.Value != bSayi.Value,
-                "ge" => sayi.Value >= bSayi.Value,
-                "le" => sayi.Value <= bSayi.Value,
-                "gt" => sayi.Value > bSayi.Value,
-                "lt" => sayi.Value < bSayi.Value,
+                "eq" => number.Value == bNumber.Value,
+                "ne" => number.Value != bNumber.Value,
+                "ge" => number.Value >= bNumber.Value,
+                "le" => number.Value <= bNumber.Value,
+                "gt" => number.Value > bNumber.Value,
+                "lt" => number.Value < bNumber.Value,
                 _ => false,
             };
         }
 
-        var metin = olculen?.ToString() ?? "";
+        var text = measured?.ToString() ?? "";
         return op switch
         {
-            "eq" => string.Equals(metin, beklenen, StringComparison.Ordinal),
-            "ne" => !string.Equals(metin, beklenen, StringComparison.Ordinal),
+            "eq" => string.Equals(text, expected, StringComparison.Ordinal),
+            "ne" => !string.Equals(text, expected, StringComparison.Ordinal),
             // sayısal olmayan değerde sıralama karşılaştırması anlamsız → kırık say
             _ => false,
         };

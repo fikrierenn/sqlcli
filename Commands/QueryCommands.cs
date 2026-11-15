@@ -19,10 +19,10 @@ public class QueryCommands
         [Option(Description = "Komut zaman aşımı (saniye, 0=varsayılan)")] int timeout = 0,
         [Option(Description = "Geçici hatada ek deneme sayısı")] int retry = 0)
     {
-        var yasak = SqlGuard.Denetle(sql, readOnly);
-        if (yasak != null)
+        var forbidden = SqlGuard.Check(sql, readOnly);
+        if (forbidden != null)
         {
-            AnsiConsole.MarkupLine($"[red]REDDEDİLDİ:[/] {Markup.Escape(yasak)}");
+            AnsiConsole.MarkupLine($"[red]REDDEDİLDİ:[/] {Markup.Escape(forbidden)}");
             throw new CommandExitedException(2);
         }
         var resolved = Resolve(conn, profile);

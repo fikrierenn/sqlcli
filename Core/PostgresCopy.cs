@@ -10,52 +10,52 @@ namespace SqlCli.Core;
 // hata olursa hedef önceki haline döner (SQL Server'daki --atomic davranışı PG'de her zaman geçerli).
 public static class PostgresCopy
 {
-    public sealed record Sonuc(long Satir, string KaynakSunucu, string KaynakDb, string HedefSunucu, string HedefDb, long HedefToplam);
+    public sealed record CopyResult(long Rows, string SourceServer, string SourceDb, string TargetServer, string TargetDb, long TargetTotal);
 
-    public static async Task<Sonuc> RunAsync(string from, string to, string query, string table,
-                                             bool truncate, int timeoutSeconds, bool saltOkuma)
+    public static async Task<CopyResult> RunAsync(string from, string to, string query, string table,
+                                             bool truncate, int timeoutSeconds, bool readOnlyMode)
     {
         await using var src = new NpgsqlConnection(ConnectionResolver.ExpandEnv(from));
         await using var dst = new NpgsqlConnection(ConnectionResolver.ExpandEnv(to));
         await src.OpenAsync();
         await dst.OpenAsync();
 
-        var sorgu = query.Trim().TrimEnd(';', ' ', '\r', '\n', '\t');
-        if (SqlGuard.YorumVeMetinSil(sorgu).Contains(';'))
+        var trimmedQuery = query.Trim().TrimEnd(';', ' ', '\r', '\n', '\t');
+        if (SqlGuard.StripCommentsAndText(trimmedQuery).Contains(';'))
             throw new ArgumentException("copy kaynağı tek bir SELECT olmalı (`;` ile ayrılmış birden fazla ifade yok).");
 
         // Kaynakta salt-okuma transaction'ı: muhafıza ek olarak sunucu tarafında da yazma imkânsız.
         await using var srcTx = await src.BeginTransactionAsync();
-        if (saltOkuma) await ExecAsync(src, "SET TRANSACTION READ ONLY", timeoutSeconds);
+        if (readOnlyMode) await ExecAsync(src, "SET TRANSACTION READ ONLY", timeoutSeconds);
 
         // Kolon adları: kaynağın şeklini 0 satırlık sorguyla öğren → hedefte ada göre eşle.
-        var kolonlar = new List<string>();
+        var columns = new List<string>();
         using (var probe = src.CreateCommand())
         {
-            probe.CommandText = $"SELECT * FROM ( {sorgu} ) q LIMIT 0";
+            probe.CommandText = $"SELECT * FROM ( {trimmedQuery} ) q LIMIT 0";
             if (timeoutSeconds > 0) probe.CommandTimeout = timeoutSeconds;
             await using var r = await probe.ExecuteReaderAsync();
-            for (int i = 0; i < r.FieldCount; i++) kolonlar.Add("\"" + r.GetName(i).Replace("\"", "\"\"") + "\"");
+            for (int i = 0; i < r.FieldCount; i++) columns.Add("\"" + r.GetName(i).Replace("\"", "\"\"") + "\"");
         }
-        if (kolonlar.Count == 0) throw new InvalidOperationException("kaynak sorgu kolon döndürmüyor.");
+        if (columns.Count == 0) throw new InvalidOperationException("kaynak sorgu kolon döndürmüyor.");
 
         await using var dstTx = await dst.BeginTransactionAsync();
         try
         {
             if (truncate) await ExecAsync(dst, $"TRUNCATE TABLE {table}", timeoutSeconds);
-            var once = await CountAsync(dst, table, timeoutSeconds);
+            var before = await CountAsync(dst, table, timeoutSeconds);
 
-            await using (var okuma = await src.BeginRawBinaryCopyAsync($"COPY ({sorgu}) TO STDOUT (FORMAT BINARY)"))
-            await using (var yazma = await dst.BeginRawBinaryCopyAsync(
-                             $"COPY {table} ({string.Join(", ", kolonlar)}) FROM STDIN (FORMAT BINARY)"))
+            await using (var reading = await src.BeginRawBinaryCopyAsync($"COPY ({trimmedQuery}) TO STDOUT (FORMAT BINARY)"))
+            await using (var writing = await dst.BeginRawBinaryCopyAsync(
+                             $"COPY {table} ({string.Join(", ", columns)}) FROM STDIN (FORMAT BINARY)"))
             {
-                await okuma.CopyToAsync(yazma);
+                await reading.CopyToAsync(writing);
             }
 
-            var sonra = await CountAsync(dst, table, timeoutSeconds);
+            var after = await CountAsync(dst, table, timeoutSeconds);
             await dstTx.CommitAsync();
             await srcTx.RollbackAsync();
-            return new Sonuc(sonra - once, src.Host ?? "?", src.Database ?? "?", dst.Host ?? "?", dst.Database ?? "?", sonra);
+            return new CopyResult(after - before, src.Host ?? "?", src.Database ?? "?", dst.Host ?? "?", dst.Database ?? "?", after);
         }
         catch
         {

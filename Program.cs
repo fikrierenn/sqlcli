@@ -36,6 +36,11 @@ using Spectre.Console;
 using SqlCli.Commands;
 using SqlCli.Core;
 
+// MCP SUNUCUSU: stdout yalnız JSON-RPC'dir — banner/sürüm muhafızı/Cocona'dan ÖNCE dallan.
+// (Banner stdout'a yazılsaydı MCP istemcisi protokolü çözemez ve sunucuyu düşürürdü.)
+if (args.Length > 0 && args[0].Equals("mcp", StringComparison.OrdinalIgnoreCase))
+    return await McpServer.RunAsync(args[1..]);
+
 // ÇIKTI KODLAMASI: Windows konsolu OEM kod sayfasında (Türkçe'de cp857) yazar; çıktı bir
 // dosyaya/pipe'a alındığında "Fiyat Farkı" → "Fiyat Fark?" olur ve o metin bir belgeye
 // (sema, rapor) yazılırsa veri BOZULUR. UTF-8'e sabitliyoruz: hem terminal hem pipe doğru.
@@ -43,10 +48,10 @@ try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* yönlendi
 
 // --format json istendiyse banner stderr'e: stdout doğrudan parse edilebilsin (eskiden
 // çağıranlar banner'ı ve ANSI kodlarını elle ayıklıyordu — pusula 2026-06-18 günlüğü).
-var jsonCikti = args.Select((a, i) => a.Equals("--format=json", StringComparison.OrdinalIgnoreCase)
+var jsonOutput = args.Select((a, i) => a.Equals("--format=json", StringComparison.OrdinalIgnoreCase)
     || (a == "--format" && i + 1 < args.Length && args[i + 1].Equals("json", StringComparison.OrdinalIgnoreCase))).Any(x => x);
 var banner = $"=== sqlcli v{VersionGuard.CurrentText} — SQL Server + PostgreSQL CLI ===";
-if (jsonCikti) Console.Error.WriteLine(banner);
+if (jsonOutput) Console.Error.WriteLine(banner);
 else AnsiConsole.MarkupLine($"[grey]{banner}[/]");
 
 // Makinede birden çok kopya var; eskisi çalışırsa burada durur (exit 2 = KOŞAMADI).
@@ -72,6 +77,7 @@ app.AddCommands<DataCommands>();
 app.AddCommands<AssertCommands>();
 app.AddCommands<LookupCommands>();
 app.AddCommands<VersionCommands>();
+app.AddCommands<McpCommands>(); // yalnız --help'te görünsün; çalıştırma yukarıda yakalanır
 
 try
 {
@@ -84,3 +90,6 @@ catch (Exception ex)
         AnsiConsole.MarkupLine($"[grey]DETAY:[/] {Markup.Escape(ex.InnerException.Message)}");
     Environment.Exit(1);
 }
+
+// Çıkış kodu: Cocona komutların ayarladığı Environment.ExitCode'u korur; sabit 0 dönmek onu ezerdi.
+return Environment.ExitCode;

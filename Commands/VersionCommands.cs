@@ -22,9 +22,9 @@ public class VersionCommands
         { "*.cs", "*.csproj", "*.props", "*.json", ":!**/sqlcli.json" };
 
     [Command("surum", Description = "Kurulu sürüm + derlendiği commit; --kaynak ile kaynağın gerisinde mi (alias: version)")]
-    public void Surum(
-        [Option(Description = "sqlcli kaynak klasörü (git klonu). Yoksa SQLCLI_KAYNAK ortam değişkeni.")] string? kaynak = null,
-        [Option(Description = "Önce git fetch: kaynak klon uzağın gerisindeyse uyar")] bool uzak = false)
+    public void ShowVersion(
+        [Option("kaynak", Description = "sqlcli kaynak klasörü (git klonu). Yoksa SQLCLI_KAYNAK ortam değişkeni.")] string? source = null,
+        [Option("uzak", Description = "Önce git fetch: kaynak klon uzağın gerisindeyse uyar")] bool remote = false)
     {
         var info = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
@@ -39,41 +39,41 @@ public class VersionCommands
         if (File.Exists(exe))
             AnsiConsole.MarkupLine($"[cyan]Derleme:[/] {File.GetLastWriteTime(exe):dd.MM.yyyy HH:mm}");
 
-        kaynak ??= Environment.GetEnvironmentVariable("SQLCLI_KAYNAK");
-        if (string.IsNullOrWhiteSpace(kaynak))
+        source ??= Environment.GetEnvironmentVariable("SQLCLI_KAYNAK");
+        if (string.IsNullOrWhiteSpace(source))
         {
             AnsiConsole.MarkupLine("[grey]Kaynakla karşılaştırılmadı (--kaynak <klasör> ya da SQLCLI_KAYNAK).[/]\n");
             return;
         }
         if (commit is null) Fail("sürüm bilgisinde commit yok — karşılaştırılamaz");
-        if (!Directory.Exists(Path.Combine(kaynak, ".git"))) Fail($"git klonu değil: {kaynak}");
+        if (!Directory.Exists(Path.Combine(source, ".git"))) Fail($"git klonu değil: {source}");
 
-        if (uzak)
+        if (remote)
         {
-            Git(kaynak, "fetch", "-q");
-            var ab = Git(kaynak, "rev-list", "--left-right", "--count", "HEAD...@{u}").Split('\t', ' ');
+            Git(source, "fetch", "-q");
+            var ab = Git(source, "rev-list", "--left-right", "--count", "HEAD...@{u}").Split('\t', ' ');
             if (ab.Length == 2 && ab[1].Trim() != "0")
                 AnsiConsole.MarkupLine($"[yellow]UYARI:[/] kaynak klon uzağın {ab[1].Trim()} commit gerisinde (git pull gerekli).");
         }
 
         // Kurulu commit kaynakta YOKSA sessizce "güncel" deme: bilinmeyen bir derleme.
-        if (Git(kaynak, "cat-file", "-t", commit!, allowFail: true) != "commit")
+        if (Git(source, "cat-file", "-t", commit!, allowFail: true) != "commit")
             Fail($"kurulu commit {Short(commit!)} kaynakta yok (başka bir klondan ya da yerel değişiklikle derlenmiş)");
 
-        var behind = Git(kaynak, new[] { "log", "--oneline", $"{commit}..HEAD", "--" }.Concat(CodePaths).ToArray())
+        var behind = Git(source, new[] { "log", "--oneline", $"{commit}..HEAD", "--" }.Concat(CodePaths).ToArray())
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
         if (behind.Length > 0)
         {
             AnsiConsole.MarkupLine($"\n[red]GERİDE:[/] kaynakta {behind.Length} kod commit'i kurulu sürümde yok:");
             foreach (var l in behind) AnsiConsole.MarkupLine($"  {Markup.Escape(l)}");
-            AnsiConsole.MarkupLine($"[grey]Yeniden kur: dotnet pack \"{Markup.Escape(kaynak)}\" -o ./nupkg ; dotnet tool update -g SqlCli --add-source ./nupkg[/]\n");
+            AnsiConsole.MarkupLine($"[grey]Yeniden kur: dotnet pack \"{Markup.Escape(source)}\" -o ./nupkg ; dotnet tool update -g SqlCli --add-source ./nupkg[/]\n");
             throw new CommandExitedException(1);
         }
-        AnsiConsole.MarkupLine($"[green]GÜNCEL:[/] kaynağın son kod commit'i kurulu sürüme dahil ({Markup.Escape(kaynak)})\n");
+        AnsiConsole.MarkupLine($"[green]GÜNCEL:[/] kaynağın son kod commit'i kurulu sürüme dahil ({Markup.Escape(source)})\n");
     }
 
     [Command("version", Description = "surum alias")]
-    public void Version([Option] string? kaynak = null, [Option] bool uzak = false) => Surum(kaynak, uzak);
+    public void Version([Option("kaynak")] string? source = null, [Option("uzak")] bool remote = false) => ShowVersion(source, remote);
 
     private static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
 

@@ -45,14 +45,14 @@ public static class VersionGuard
 
     private static Version Normalize(Version v) => new(v.Major, v.Minor, Math.Max(v.Build, 0));
 
-    private static readonly string[] MuafKomutlar = ["surum", "version", "--version"];
+    private static readonly string[] ExemptCommands = ["surum", "version", "--version"];
 
     /// <summary>Eskiyse hata basıp süreci 2 ile bitirir.</summary>
     public static void EnsureLatest(string[] args)
     {
-        if (args.Length > 0 && MuafKomutlar.Contains(args[0], StringComparer.OrdinalIgnoreCase)) return;
+        if (args.Length > 0 && ExemptCommands.Contains(args[0], StringComparer.OrdinalIgnoreCase)) return;
 
-        var kaynaklar = new List<(Version Surum, string Nereden)>();
+        var sources = new List<(Version Ver, string Origin)>();
 
         var store = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -62,7 +62,7 @@ public static class VersionGuard
             if (Directory.Exists(store))
                 foreach (var d in Directory.GetDirectories(store))
                     if (Version.TryParse(Path.GetFileName(d), out var v))
-                        kaynaklar.Add((Normalize(v), "kurulu global tool"));
+                        sources.Add((Normalize(v), "kurulu global tool"));
         }
         catch { /* erişilemeyen store kontrolü engellemez */ }
 
@@ -70,25 +70,25 @@ public static class VersionGuard
         if (!string.IsNullOrWhiteSpace(src))
         {
             var v = ReadCsprojVersion(Path.Combine(src, "sqlcli.csproj"));
-            if (v != null) kaynaklar.Add((v, $"kanonik kaynak {src}"));
+            if (v != null) sources.Add((v, $"kanonik kaynak {src}"));
         }
 
-        var enYeni = kaynaklar.OrderByDescending(k => k.Surum).FirstOrDefault();
+        var newest = sources.OrderByDescending(k => k.Ver).FirstOrDefault();
 
-        if (enYeni.Surum != null && Current < enYeni.Surum)
+        if (newest.Ver != null && Current < newest.Ver)
         {
-            var konum = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+            var location = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
             if (Environment.GetEnvironmentVariable("SQLCLI_SKIP_VERSION_CHECK") == "1")
             {
                 AnsiConsole.MarkupLine(
-                    $"[yellow]UYARI:[/] eski sqlcli v{CurrentText} çalışıyor (güncel v{Fmt(enYeni.Surum)}) — " +
+                    $"[yellow]UYARI:[/] eski sqlcli v{CurrentText} çalışıyor (güncel v{Fmt(newest.Ver)}) — " +
                     "SQLCLI_SKIP_VERSION_CHECK=1 ile kontrol atlandı.");
                 return;
             }
 
             AnsiConsole.MarkupLine($"\n[red]HATA: Bu sqlcli kopyası ESKİ.[/]");
-            AnsiConsole.MarkupLine($"  Çalışan : v{CurrentText}  [grey]({Markup.Escape(konum)})[/]");
-            AnsiConsole.MarkupLine($"  Güncel  : v{Fmt(enYeni.Surum)}  [grey]({Markup.Escape(enYeni.Nereden)})[/]");
+            AnsiConsole.MarkupLine($"  Çalışan : v{CurrentText}  [grey]({Markup.Escape(location)})[/]");
+            AnsiConsole.MarkupLine($"  Güncel  : v{Fmt(newest.Ver)}  [grey]({Markup.Escape(newest.Origin)})[/]");
             AnsiConsole.MarkupLine("\n[yellow]Güncelle:[/] kanonik kaynakta");
             AnsiConsole.MarkupLine("  dotnet pack -c Release -o ./nupkg");
             AnsiConsole.MarkupLine("  dotnet tool update -g --add-source ./nupkg SqlCli");

@@ -48,37 +48,37 @@ public static class ConnectionResolver
         if (!connectionString.Contains("${")) return connectionString;
 
         var dotenv = LoadDotEnv();
-        var eksik = new List<string>();
-        var sonuc = System.Text.RegularExpressions.Regex.Replace(
+        var missing = new List<string>();
+        var result = System.Text.RegularExpressions.Regex.Replace(
             connectionString, @"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", m =>
             {
-                var ad = m.Groups[1].Value;
-                var deger = Environment.GetEnvironmentVariable(ad);
-                if (string.IsNullOrEmpty(deger)) dotenv.TryGetValue(ad, out deger);
-                if (string.IsNullOrEmpty(deger)) { eksik.Add(ad); return m.Value; }
-                return deger;
+                var paramName = m.Groups[1].Value;
+                var value = Environment.GetEnvironmentVariable(paramName);
+                if (string.IsNullOrEmpty(value)) dotenv.TryGetValue(paramName, out value);
+                if (string.IsNullOrEmpty(value)) { missing.Add(paramName); return m.Value; }
+                return value;
             });
 
-        if (eksik.Count > 0)
+        if (missing.Count > 0)
             throw new InvalidOperationException(
-                "Bağlantı string'inde karşılığı olmayan yer tutucu: " + string.Join(", ", eksik) +
+                "Bağlantı string'inde karşılığı olmayan yer tutucu: " + string.Join(", ", missing) +
                 ". Ortam değişkeni ver ya da .env dosyasına ekle.");
-        return sonuc;
+        return result;
     }
 
     private static Dictionary<string, string> LoadDotEnv()
     {
-        var sonuc = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var yol = FindFile(".env");
-        if (yol == null) return sonuc;
-        foreach (var satir in File.ReadLines(yol))
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var filePath = FindFile(".env");
+        if (filePath == null) return result;
+        foreach (var line in File.ReadLines(filePath))
         {
-            var s = satir.Trim();
+            var s = line.Trim();
             if (s.Length == 0 || s.StartsWith('#') || !s.Contains('=')) continue;
             var i = s.IndexOf('=');
-            sonuc[s[..i].Trim()] = s[(i + 1)..].Trim();
+            result[s[..i].Trim()] = s[(i + 1)..].Trim();
         }
-        return sonuc;
+        return result;
     }
 
     public static ResolvedConnection? Resolve(string? explicitConn, string? profileName)
@@ -198,6 +198,16 @@ public static class ConnectionResolver
             var candidate = Path.Combine(dir.FullName, filename);
             if (File.Exists(candidate)) return candidate;
             dir = dir.Parent;
+        }
+
+        // YEDEK: proje klasöründe bulunamazsa kullanıcı klasörüne (~/.sqlcli) bak. Yalnız
+        // sqlcli.json ve .env için; appsettings.json bir projeye aittir, genel olamaz.
+        // Projede bulunan dosya her zaman önceliklidir, mevcut davranış değişmez.
+        if (filename is "sqlcli.json" or ".env")
+        {
+            var fallback = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".sqlcli", filename);
+            if (File.Exists(fallback)) return fallback;
         }
         return null;
     }

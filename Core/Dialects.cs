@@ -580,7 +580,7 @@ public sealed class PostgresDialect : ISqlDialect
 
         var stmt = sql.Trim().TrimEnd(';', ' ', '\r', '\n', '\t');
         // Tek ifade şartı: "EXPLAIN a; DELETE ..." ikinci ifadeyi plansız GERÇEKTEN çalıştırırdı.
-        if (SqlGuard.YorumVeMetinSil(stmt).Contains(';'))
+        if (SqlGuard.StripCommentsAndText(stmt).Contains(';'))
             throw new ArgumentException("explain tek bir SQL ifadesi alır (`;` ile ayrılmış birden fazla ifade yok).");
 
         var opts = (actual ? "ANALYZE, BUFFERS, " : "") + $"FORMAT {fmt.ToUpperInvariant()}";

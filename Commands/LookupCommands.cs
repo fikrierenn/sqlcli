@@ -54,30 +54,30 @@ public class LookupCommands
             throw new CommandExitedException(2);
         }
 
-        var kodKol = keyCol ?? dt.Columns[0].ColumnName;
-        var adKol = nameCol ?? dt.Columns[1].ColumnName;
+        var codeColumn = keyCol ?? dt.Columns[0].ColumnName;
+        var nameColumn = nameCol ?? dt.Columns[1].ColumnName;
 
         // Kullanım sayacı — kodun canlı veride kaç satırda geçtiği.
-        Dictionary<string, long>? sayim = null;
+        Dictionary<string, long>? counting = null;
         if (!string.IsNullOrWhiteSpace(countFrom))
         {
-            var son = countFrom.LastIndexOf('.');
-            if (son <= 0)
+            var last = countFrom.LastIndexOf('.');
+            if (last <= 0)
             {
                 AnsiConsole.MarkupLine("[red]HATA:[/] --count-from biçimi <tablo>.<kolon> olmalı.");
                 throw new CommandExitedException(2);
             }
-            var sayimTablo = countFrom[..son];
-            var sayimKolon = countFrom[(son + 1)..];
+            var countTable = countFrom[..last];
+            var countColumn = countFrom[(last + 1)..];
             var sdt = await SqlExecutor.RunQueryAsync(
                 r.ConnectionString,
-                $"SELECT {sayimKolon} AS kod, COUNT(*) AS adet FROM {sayimTablo} GROUP BY {sayimKolon}",
+                $"SELECT {countColumn} AS kod, COUNT(*) AS adet FROM {countTable} GROUP BY {countColumn}",
                 null, timeout, retry, null);
-            sayim = new Dictionary<string, long>();
+            counting = new Dictionary<string, long>();
             foreach (DataRow s in sdt.Rows)
             {
                 if (s["kod"] is DBNull) continue;
-                sayim[s["kod"].ToString()!] = Convert.ToInt64(s["adet"]);
+                counting[s["kod"].ToString()!] = Convert.ToInt64(s["adet"]);
             }
         }
 
@@ -87,45 +87,45 @@ public class LookupCommands
             return;
         }
 
-        var satirlar = dt.Rows.Cast<DataRow>()
-            .Where(x => x[kodKol] is not DBNull)
-            .Select(x => (Kod: x[kodKol].ToString()!, Ad: x[adKol]?.ToString() ?? ""))
-            .OrderBy(x => long.TryParse(x.Kod, out var n) ? n : long.MaxValue)
-            .ThenBy(x => x.Kod, StringComparer.Ordinal)
+        var rowList = dt.Rows.Cast<DataRow>()
+            .Where(x => x[codeColumn] is not DBNull)
+            .Select(x => (Code: x[codeColumn].ToString()!, Name: x[nameColumn]?.ToString() ?? ""))
+            .OrderBy(x => long.TryParse(x.Code, out var n) ? n : long.MaxValue)
+            .ThenBy(x => x.Code, StringComparer.Ordinal)
             .ToList();
 
         var sb = new StringBuilder();
         if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
         {
             sb.AppendLine("{");
-            for (int i = 0; i < satirlar.Count; i++)
+            for (int i = 0; i < rowList.Count; i++)
             {
-                var (kod, ad) = satirlar[i];
-                var etiket = Etiket(ad, kod, sayim);
+                var (kod, paramName) = rowList[i];
+                var label = Label(paramName, kod, counting);
                 sb.Append("  \"").Append(kod).Append("\": ")
-                  .Append(System.Text.Json.JsonSerializer.Serialize(etiket))
-                  .AppendLine(i < satirlar.Count - 1 ? "," : "");
+                  .Append(System.Text.Json.JsonSerializer.Serialize(label))
+                  .AppendLine(i < rowList.Count - 1 ? "," : "");
             }
             sb.AppendLine("}");
         }
         else // yaml
         {
             sb.AppendLine("values:");
-            foreach (var (kod, ad) in satirlar)
+            foreach (var (kod, paramName) in rowList)
                 sb.Append("  ").Append(kod).Append(": '")
-                  .Append(Etiket(ad, kod, sayim).Replace("'", "’")).AppendLine("'");
+                  .Append(Label(paramName, kod, counting).Replace("'", "’")).AppendLine("'");
             sb.Append("kume_kaynagi: \"").Append(table).Append(" — ")
-              .Append(satirlar.Count).Append(" kod, lookup'tan okundu (elle yazılmadı). ")
+              .Append(rowList.Count).Append(" kod, lookup'tan okundu (elle yazılmadı). ")
               .Append("Ölçüm: ").Append(DateTime.Now.ToString("yyyy-MM-dd")).AppendLine("\"");
         }
 
         Console.Out.Write(sb.ToString());
     }
 
-    private static string Etiket(string ad, string kod, Dictionary<string, long>? sayim)
+    private static string Label(string paramName, string kod, Dictionary<string, long>? counting)
     {
-        if (sayim == null) return ad;
-        var adet = sayim.TryGetValue(kod, out var n) ? n : 0;
-        return adet > 0 ? $"{ad} — {adet:N0} kayıt" : $"{ad} — canlıda yok";
+        if (counting == null) return paramName;
+        var usageCount = counting.TryGetValue(kod, out var n) ? n : 0;
+        return usageCount > 0 ? $"{paramName} — {usageCount:N0} kayıt" : $"{paramName} — canlıda yok";
     }
 }

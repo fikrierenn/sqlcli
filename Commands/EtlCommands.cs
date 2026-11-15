@@ -54,27 +54,27 @@ public class EtlCommands
     {
         var json = string.Equals(format, "json", StringComparison.OrdinalIgnoreCase);
         if (!json && !string.Equals(format, "table", StringComparison.OrdinalIgnoreCase))
-            Kosamadi(json, $"--format yalniz table|json olabilir: '{format}'");
+            DidNotRun(json, $"--format yalniz table|json olabilir: '{format}'");
 
         if (parallel > 1 && string.IsNullOrWhiteSpace(partkey))
-            Kosamadi(json, "--parallel > 1 icin --partkey <sayisal_kolon> zorunlu.");
+            DidNotRun(json, "--parallel > 1 icin --partkey <sayisal_kolon> zorunlu.");
         if (atomic && parallel > 1)
-            Kosamadi(json, "--atomic tek transaction ister; --parallel > 1 ile birlikte kullanilamaz.");
+            DidNotRun(json, "--atomic tek transaction ister; --parallel > 1 ile birlikte kullanilamaz.");
 
         // Sağlayıcı çifti: SQL Server → SQL Server (SqlBulkCopy) ya da PostgreSQL → PostgreSQL (ikili COPY).
         // Karışık çift (cross-provider) desteklenmez.
-        var kProv = ISqlDialect.Detect(from).Provider;
-        var hProv = ISqlDialect.Detect(to).Provider;
-        if (kProv != hProv)
-            Kosamadi(json, "copy kaynak ve hedef aynı sağlayıcıda olmalı (SQL Server→SQL Server ya da PostgreSQL→PostgreSQL); karışık çift desteklenmez.");
-        var postgres = kProv == DbProvider.Postgres;
+        var srcProvider = ISqlDialect.Detect(from).Provider;
+        var dstProvider = ISqlDialect.Detect(to).Provider;
+        if (srcProvider != dstProvider)
+            DidNotRun(json, "copy kaynak ve hedef aynı sağlayıcıda olmalı (SQL Server→SQL Server ya da PostgreSQL→PostgreSQL); karışık çift desteklenmez.");
+        var postgres = srcProvider == DbProvider.Postgres;
 
         // MUHAFIZ: kullanici sorgusuna (paralel sarmadan ONCE) ve kaynaga hicbir sey gitmeden.
-        var saltOkuma = SqlGuard.SaltOkumaAcikMi(readOnly);
-        if (!saltOkuma)
+        var readOnlyMode = SqlGuard.IsReadOnlyEnabled(readOnly);
+        if (!readOnlyMode)
             Log(json, "[yellow]UYARI:[/] --read-only=false — kaynak sorgu salt-okuma muhafizindan GECIRILMIYOR.");
-        var red = SqlGuard.Denetle(query, readOnly);
-        if (red != null) Kosamadi(json, red);
+        var red = SqlGuard.Check(query, readOnly);
+        if (red != null) DidNotRun(json, red);
 
         if (postgres)
         {
@@ -84,7 +84,7 @@ public class EtlCommands
             if (atomic) Log(json, "[grey]Not: PostgreSQL'de yükleme + TRUNCATE zaten tek transaction (--atomic hep açık).[/]");
             if (batch != 100000) Log(json, "[yellow]UYARI:[/] --batch PostgreSQL'de uygulanmaz (tek COPY akışı); yok sayıldı.");
             if (!string.IsNullOrWhiteSpace(partkey)) Log(json, "[yellow]UYARI:[/] --partkey PostgreSQL'de uygulanmaz (--parallel yok); yok sayıldı.");
-            await CopyPostgresAsync(from, to, query, table, truncate, timeout, saltOkuma, param, parallel, json);
+            await CopyPostgresAsync(from, to, query, table, truncate, timeout, readOnlyMode, param, parallel, json);
             return;
         }
 
@@ -93,22 +93,22 @@ public class EtlCommands
         if (checkConstraints) opts |= SqlBulkCopyOptions.CheckConstraints;
         if (fireTriggers) opts |= SqlBulkCopyOptions.FireTriggers;
 
-        var sure = Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
         try
         {
             var dp = ParamsCommands.Build(param);
-            var (kSunucu, kDb) = await KimlikAsync(from);
-            var (hSunucu, hDb) = await KimlikAsync(to);
-            Log(json, $"[grey]kaynak: {Markup.Escape(kSunucu)} / {Markup.Escape(kDb)}  →  hedef: {Markup.Escape(hSunucu)} / {Markup.Escape(hDb)} · {Markup.Escape(table)}[/]");
+            var (srcServer, srcDb) = await IdentityAsync(from);
+            var (dstServer, dstDb) = await IdentityAsync(to);
+            Log(json, $"[grey]kaynak: {Markup.Escape(srcServer)} / {Markup.Escape(srcDb)}  →  hedef: {Markup.Escape(dstServer)} / {Markup.Escape(dstDb)} · {Markup.Escape(table)}[/]");
 
-            long satir;
+            long rowsCopied;
             if (atomic)
             {
                 await using var dst = new SqlConnection(to);
                 await dst.OpenAsync();
                 await using var tx = (SqlTransaction)await dst.BeginTransactionAsync();
                 if (truncate) await TruncateAsync(dst, tx, table, timeout, json);
-                satir = await StreamOneAsync(from, dst, tx, query, dp, table, opts, batch, timeout, "", json);
+                rowsCopied = await StreamOneAsync(from, dst, tx, query, dp, table, opts, batch, timeout, "", json);
                 await tx.CommitAsync();
             }
             else
@@ -125,7 +125,7 @@ public class EtlCommands
                 {
                     await using var dst = new SqlConnection(to);
                     await dst.OpenAsync();
-                    satir = await StreamOneAsync(from, dst, null, query, dp, table, opts, batch, timeout, "", json);
+                    rowsCopied = await StreamOneAsync(from, dst, null, query, dp, table, opts, batch, timeout, "", json);
                 }
                 else
                 {
@@ -142,18 +142,18 @@ public class EtlCommands
                             return await StreamOneAsync(from, dst, null, pq, dp, table, opts, batch, timeout, $"p{idx}", json);
                         }));
                     }
-                    satir = (await Task.WhenAll(tasks)).Sum();
+                    rowsCopied = (await Task.WhenAll(tasks)).Sum();
                 }
             }
-            sure.Stop();
+            elapsed.Stop();
 
             // Bilgi: hedef tablonun TOPLAM satiri (aktarilan sayi DEGIL — tablo onceki
             // yuklemeleri de tutabilir). Aktarilan sayi `satir`dir (SqlBulkCopy.RowsCopied64).
-            long hedefToplam;
+            long targetTotal;
             await using (var dc = new SqlConnection(to))
             {
                 await dc.OpenAsync();
-                hedefToplam = await dc.ExecuteScalarAsync<long>(
+                targetTotal = await dc.ExecuteScalarAsync<long>(
                     new CommandDefinition($"SELECT COUNT_BIG(*) FROM {table}", commandTimeout: timeout));
             }
 
@@ -162,15 +162,15 @@ public class EtlCommands
                 Console.Out.WriteLine(JsonSerializer.Serialize(new
                 {
                     durum = "TAMAM",
-                    satir,
-                    sure_ms = sure.ElapsedMilliseconds,
-                    kaynak_sunucu = kSunucu,
-                    kaynak_db = kDb,
-                    hedef_sunucu = hSunucu,
-                    hedef_db = hDb,
+                    satir = rowsCopied,
+                    sure_ms = elapsed.ElapsedMilliseconds,
+                    kaynak_sunucu = srcServer,
+                    kaynak_db = srcDb,
+                    hedef_sunucu = dstServer,
+                    hedef_db = dstDb,
                     tablo = table,
-                    hedef_toplam = hedefToplam,
-                    read_only = saltOkuma,
+                    hedef_toplam = targetTotal,
+                    read_only = readOnlyMode,
                     check_constraints = checkConstraints,
                     fire_triggers = fireTriggers,
                     atomic,
@@ -179,73 +179,73 @@ public class EtlCommands
             }
             else
             {
-                AnsiConsole.MarkupLine($"[green]OK[/] {Markup.Escape(table)} <- aktarilan: [cyan]{satir}[/] satir, {sure.ElapsedMilliseconds} ms (tablo toplami: {hedefToplam})");
-                AnsiConsole.MarkupLine($"SONUC satir={satir} sure_ms={sure.ElapsedMilliseconds}");
+                AnsiConsole.MarkupLine($"[green]OK[/] {Markup.Escape(table)} <- aktarilan: [cyan]{rowsCopied}[/] satir, {elapsed.ElapsedMilliseconds} ms (tablo toplami: {targetTotal})");
+                AnsiConsole.MarkupLine($"SONUC satir={rowsCopied} sure_ms={elapsed.ElapsedMilliseconds}");
             }
         }
         catch (CommandExitedException) { throw; }
         catch (Exception ex)
         {
-            sure.Stop();
+            elapsed.Stop();
             var no = (ex as SqlException)?.Number ?? (ex.InnerException as SqlException)?.Number;
-            var neden = atomic ? "hedef transaction geri alindi (--atomic): hedef degismedi"
+            var reason = atomic ? "hedef transaction geri alindi (--atomic): hedef degismedi"
                                : "YARIM YUKLEME OLABILIR: tamamlanan batch'ler (ve varsa TRUNCATE) hedefte kaldi";
-            Kosamadi(json, $"{(no != null ? $"SQL {no}: " : "")}{ex.Message} — {neden}", no, sure.ElapsedMilliseconds);
+            DidNotRun(json, $"{(no != null ? $"SQL {no}: " : "")}{ex.Message} — {reason}", no, elapsed.ElapsedMilliseconds);
         }
     }
 
     // PostgreSQL → PostgreSQL: ikili COPY (Core/PostgresCopy.cs). SQL Server'a özgü seçenekler PG'de anlamsız;
     // sessizce yok sayılmaz — parametre/paralel açıkça reddedilir.
     private static async Task CopyPostgresAsync(string from, string to, string query, string table, bool truncate,
-                                                int timeout, bool saltOkuma, string[]? param, int parallel, bool json)
+                                                int timeout, bool readOnlyMode, string[]? param, int parallel, bool json)
     {
         if (param is { Length: > 0 })
-            Kosamadi(json, "PostgreSQL copy --param desteklemez (COPY (sorgu) TO STDOUT parametre almaz); değeri sorguya yaz.");
+            DidNotRun(json, "PostgreSQL copy --param desteklemez (COPY (sorgu) TO STDOUT parametre almaz); değeri sorguya yaz.");
         if (parallel > 1)
-            Kosamadi(json, "PostgreSQL copy --parallel desteklemez (tek COPY akışı).");
+            DidNotRun(json, "PostgreSQL copy --parallel desteklemez (tek COPY akışı).");
 
-        var sure = Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
         try
         {
-            var s = await PostgresCopy.RunAsync(from, to, query, table, truncate, timeout, saltOkuma);
-            sure.Stop();
-            Log(json, $"[grey]kaynak: {Markup.Escape(s.KaynakSunucu)} / {Markup.Escape(s.KaynakDb)}  →  hedef: {Markup.Escape(s.HedefSunucu)} / {Markup.Escape(s.HedefDb)} · {Markup.Escape(table)}[/]");
+            var s = await PostgresCopy.RunAsync(from, to, query, table, truncate, timeout, readOnlyMode);
+            elapsed.Stop();
+            Log(json, $"[grey]kaynak: {Markup.Escape(s.SourceServer)} / {Markup.Escape(s.SourceDb)}  →  hedef: {Markup.Escape(s.TargetServer)} / {Markup.Escape(s.TargetDb)} · {Markup.Escape(table)}[/]");
             if (json)
             {
                 Console.Out.WriteLine(JsonSerializer.Serialize(new
                 {
                     durum = "TAMAM",
-                    satir = s.Satir,
-                    sure_ms = sure.ElapsedMilliseconds,
-                    kaynak_sunucu = s.KaynakSunucu,
-                    kaynak_db = s.KaynakDb,
-                    hedef_sunucu = s.HedefSunucu,
-                    hedef_db = s.HedefDb,
+                    satir = s.Rows,
+                    sure_ms = elapsed.ElapsedMilliseconds,
+                    kaynak_sunucu = s.SourceServer,
+                    kaynak_db = s.SourceDb,
+                    hedef_sunucu = s.TargetServer,
+                    hedef_db = s.TargetDb,
                     tablo = table,
-                    hedef_toplam = s.HedefToplam,
-                    read_only = saltOkuma,
+                    hedef_toplam = s.TargetTotal,
+                    read_only = readOnlyMode,
                     atomic = true,
                     truncate,
                 }));
             }
             else
             {
-                AnsiConsole.MarkupLine($"[green]OK[/] {Markup.Escape(table)} <- aktarilan: [cyan]{s.Satir}[/] satir, {sure.ElapsedMilliseconds} ms (tablo toplami: {s.HedefToplam})");
-                AnsiConsole.MarkupLine($"SONUC satir={s.Satir} sure_ms={sure.ElapsedMilliseconds}");
+                AnsiConsole.MarkupLine($"[green]OK[/] {Markup.Escape(table)} <- aktarilan: [cyan]{s.Rows}[/] satir, {elapsed.ElapsedMilliseconds} ms (tablo toplami: {s.TargetTotal})");
+                AnsiConsole.MarkupLine($"SONUC satir={s.Rows} sure_ms={elapsed.ElapsedMilliseconds}");
             }
         }
         catch (CommandExitedException) { throw; }
         catch (Exception ex)
         {
-            sure.Stop();
+            elapsed.Stop();
             var no = (ex as Npgsql.PostgresException)?.SqlState ?? (ex.InnerException as Npgsql.PostgresException)?.SqlState;
-            Kosamadi(json, $"{(no != null ? $"SQLSTATE {no}: " : "")}{ex.Message} — hedef transaction geri alindi: hedef degismedi" +
+            DidNotRun(json, $"{(no != null ? $"SQLSTATE {no}: " : "")}{ex.Message} — hedef transaction geri alindi: hedef degismedi" +
                      (no is "08P01" or "22P03" ? " (ikili COPY: kolon tipleri kaynak ve hedefte BIREBIR ayni olmali)" : ""),
-                     null, sure.ElapsedMilliseconds);
+                     null, elapsed.ElapsedMilliseconds);
         }
     }
 
-    private static async Task<(string Sunucu, string Db)> KimlikAsync(string cs)
+    private static async Task<(string Server, string Db)> IdentityAsync(string cs)
     {
         await using var c = new SqlConnection(cs);
         await c.OpenAsync();
@@ -299,16 +299,16 @@ public class EtlCommands
 
     /// <summary>KOSAMADI: mesaj + cikis 2. json kipinde stdout'a da HATA nesnesi yazilir.</summary>
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
-    private static void Kosamadi(bool json, string mesaj, int? hataNo = null, long sureMs = 0)
+    private static void DidNotRun(bool json, string message, int? errorNumber = null, long elapsedMs = 0)
     {
         if (json)
         {
-            Console.Out.WriteLine(JsonSerializer.Serialize(new { durum = "HATA", hata_no = hataNo, hata = mesaj, sure_ms = sureMs }));
-            Console.Error.WriteLine($"HATA: {mesaj}");
+            Console.Out.WriteLine(JsonSerializer.Serialize(new { durum = "HATA", hata_no = errorNumber, hata = message, sure_ms = elapsedMs }));
+            Console.Error.WriteLine($"HATA: {message}");
         }
         else
         {
-            AnsiConsole.MarkupLine($"[red]HATA:[/] {Markup.Escape(mesaj)}");
+            AnsiConsole.MarkupLine($"[red]HATA:[/] {Markup.Escape(message)}");
         }
         throw new CommandExitedException(2);
     }
