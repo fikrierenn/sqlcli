@@ -42,7 +42,7 @@ public static class YanEtkiDenetimi
     /// <summary>Sorguda bulunan geri alınamaz yan etki belirteçleri (küçük harf, tekil, sırayla). Yoksa boş.</summary>
     public static IReadOnlyList<string> Bul(string sql, DbProvider provider)
     {
-        var temiz = SqlGuard.YorumVeMetinSil(sql);
+        var temiz = SqlGuard.StripCommentsAndText(sql);
         var kume = provider == DbProvider.Postgres ? Pg : SqlServer;
         var bulunan = new List<string>();
         var ms = Kelime.Matches(temiz);
