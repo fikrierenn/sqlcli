@@ -15,7 +15,8 @@ public class PerfCommands
         [Option] string? conn = null,
         [Option] string? profile = null,
         [Option(Description = "Plan tipi: estimated|actual (actual sorguyu GERÇEKTEN çalıştırır)")] string mode = "estimated",
-        [Option(Description = "--mode=actual kısayolu. PostgreSQL: EXPLAIN (ANALYZE, BUFFERS); değişiklikler geri alınır")] bool analyze = false,
+        [Option(Description = "--mode=actual kısayolu. PostgreSQL: EXPLAIN (ANALYZE, BUFFERS); tablo değişiklikleri geri alınır (sequence/dblink/NOTIFY gibi yan etkiler ALINMAZ)")] bool analyze = false,
+        [Option("allow-side-effects", Description = "analyze/actual: sequence (nextval), dblink, NOTIFY gibi ROLLBACK'in geri almadığı yan etkili sorguya bilerek izin ver (varsayılan: reddedilir)")] bool allowSideEffects = false,
         [Option(Description = "Plan biçimi. PostgreSQL: text|json|xml (varsayılan text); SQL Server: yalnız xml (varsayılan xml), diğerleri hata")] string? format = null)
     {
         var resolved = Resolve(conn, profile);
@@ -32,13 +33,21 @@ public class PerfCommands
                 AnsiConsole.MarkupLine($"[red]HATA:[/] {Markup.Escape(red)} (explain actual/analyze ifadeyi çalıştırır)");
                 throw new CommandExitedException(2);
             }
+
+            // ROLLBACK'in geri almadığı yan etkiler (nextval, dblink, NOTIFY…): bağlanmadan, varsayılan RED.
+            var yanEtki = YanEtkiDenetimi.Denetle(sql, resolved.Dialect.Provider, allowSideEffects);
+            if (yanEtki != null)
+            {
+                AnsiConsole.MarkupLine($"[red]HATA:[/] {Markup.Escape(yanEtki)}");
+                throw new CommandExitedException(2);
+            }
         }
 
         await using var c = await ConnectionResolver.OpenAsync(resolved.Effective);
         ExplainResult result;
         try
         {
-            result = await resolved.Dialect.ExplainAsync(c, sql, actual, format);
+            result = await resolved.Dialect.ExplainAsync(c, sql, actual, format, allowSideEffects);
         }
         catch (ArgumentException ex)
         {

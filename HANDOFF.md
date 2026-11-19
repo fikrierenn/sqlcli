@@ -30,6 +30,11 @@ Bağlam: BKM görev-tanımları projesi Mosaik'e taşınırken sqlcli araç olar
 - PG canlı doğrulama (bir Postgres DB ile export/import/introspection).
 - Oracle dialect (gerçek Oracle hedefi çıkınca).
 
+## v2.7.2 (06.11.2026) — PR #4 Codex P2 bulguları
+- Bulgu 1 (`Core/PostgresCopy.cs`): `--truncate` + kaynak hedefi okuyor → kendi kilidinde takılma. Çözüm: `pg_locks` ile kaynak pid'inin hedef tablodaki kilidi TRUNCATE'ten önce ölçülür, `InvalidOperationException` ("kendi kaynağını boşaltırdı").
+- Bulgu 2 (`Core/Dialects.cs`): analiz rollback'i sequence/dblink/NOTIFY'yi geri almaz. Çözüm (reddet, uyarıyla geçme): `Core/YanEtkiDenetimi.cs` belirteç listesi; `--allow-side-effects` ile aşılır. Sınır README'de: UDF/tetikleyici/identity görülmez.
+- Sürüm tag'i (`v2.7.2`) merge sonrası atılır.
+
 ## v2.7.1 (05.11.2026) — PostgreSQL perf + copy
 - `explain` (`--analyze`, `--format text|json`), `active-sessions`, `slow-queries`, `kill` (`--terminate`) PG'de çalışır; SQL `ISqlDialect`'te (`Core/Dialects.cs`).
 - `copy` PG→PG: `Core/PostgresCopy.cs` (ham ikili COPY, tek hedef transaction). Karışık çift reddedilir.
