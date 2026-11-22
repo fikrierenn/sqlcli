@@ -111,4 +111,48 @@ public class DecryptTests
     [InlineData("admin:HOST", null, "admin:HOST")]                  // iki kez önek eklenmez
     public void DacDataSource_builtCorrectly(string girdi, int? port, string expected)
         => Assert.Equal(expected, DecryptCore.BuildDacDataSource(girdi, port));
+
+    // ─── DAC yalnız şifreli hedef varsa (22.11.2026: bkmrapor şifresiz dbo.fat_ekle'yi okuyamıyordu) ───
+
+    [Theory]
+    [InlineData(new bool[0], false)]                 // hedef yok
+    [InlineData(new[] { false }, false)]             // tek şifresiz → DAC yok
+    [InlineData(new[] { false, false, false }, false)] // hepsi şifresiz → DAC yok
+    [InlineData(new[] { true }, true)]               // tek şifreli → DAC
+    [InlineData(new[] { false, true, false }, true)] // karışık → DAC (bir kez)
+    public void NeedsDac_onlyWhenAnyTargetEncrypted(bool[] flags, bool expected)
+        => Assert.Equal(expected, DecryptCore.NeedsDac(flags));
+
+    [Fact]
+    public void DacFailure_remoteAlreadyOn_pointsToOtherSession()
+    {
+        var msg = DecryptCore.DescribeDacFailure("err 42", 42, DecryptCore.RemoteDacState.AlreadyOn);
+        Assert.Contains("BAŞKA bir DAC oturumu", msg);
+        Assert.Contains("ayara dokunmadı", msg);
+    }
+
+    [Fact]
+    public void DacFailure_17810_pointsToOtherSession_evenIfStateUnknown()
+    {
+        var msg = DecryptCore.DescribeDacFailure("max 1 DAC", DecryptCore.DacAlreadyInUseError,
+            DecryptCore.RemoteDacState.Unknown);
+        Assert.Contains("BAŞKA bir DAC oturumu", msg);
+        Assert.DoesNotContain("sp_configure", msg);   // açma tavsiyesi verilmez
+    }
+
+    [Fact]
+    public void DacFailure_openedByUs_saysSettingWillBeRestored()
+    {
+        var msg = DecryptCore.DescribeDacFailure("err", 0, DecryptCore.RemoteDacState.OpenedByUs);
+        Assert.Contains("eski haline (0) alınacak", msg);
+        Assert.Contains("TEK oturuma", msg);
+    }
+
+    [Fact]
+    public void DacFailure_offWithNoAutoDac_suggestsAutoDac()
+    {
+        var msg = DecryptCore.DescribeDacFailure("err 42", 42, DecryptCore.RemoteDacState.Off);
+        Assert.Contains("--no-auto-dac", msg);
+        Assert.DoesNotContain("BAŞKA bir DAC oturumu", msg);
+    }
 }

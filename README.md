@@ -249,7 +249,8 @@ sqlcli ddl --profile erp --like "%sevk%" --out cozulmus-sp
 | Bayrak | Anlamı |
 |---|---|
 | `<ad>` | `şema.ad` veya `ad`. `--like` verildiğinde boş bırakılabilir. |
-| `--like <desen>` | Toplu: ada göre `LIKE` (ör. `%sevk%`). Yalnız **şifreli** nesneleri seçer. |
+| `--like <desen>` | Toplu: ada göre `LIKE` (ör. `%sevk%`). Varsayılan yalnız **şifreli** nesneleri seçer. |
+| `--include-plain` | `--like` ile **şifresiz** nesneleri de al (karışık liste; şifresizler DAC'sız gelir). |
 | `--out <klasör>` | Her nesneyi `şema.ad.sql` olarak yazar (UTF-8). Verilmezse stdout. |
 | `--dac-port <n>` | DAC TCP portu (ör. `1434`). Verilmezse SQL Browser çözer. |
 | `--dac-server <ad>` | DAC sunucu adını tamamen override et (`admin:` öneki otomatik). |
@@ -257,9 +258,19 @@ sqlcli ddl --profile erp --like "%sevk%" --out cozulmus-sp
 | `--overwrite` | `--out` ile var olan dosyanın üzerine yaz. |
 | `--dry-run` | Hedefi **ALTER etme**; yalnız uzunluk + planı bildir. |
 
-Şifresiz nesne için DAC'a **hiç gerek yok** — tanım doğrudan gelir. Şifreli nesnede uzak DAC kapalıysa
-(RDSTEST'te varsayılan) **ekstra bir şey gerekmez**: komut kendisi geçici açar, iş bitince eski haline (0) alır
-(sysadmin gerekir).
+Şifresiz nesne için DAC'a **hiç gerek yok** — tanım doğrudan gelir. Komut hedefleri önce **normal bağlantıda**
+çözer ve `OBJECTPROPERTYEX(...,'IsEncrypted')` bakar: şifresiz nesnenin tanımı `sys.sql_modules.definition`'dan
+okunur; DAC, otomatik DAC, `sp_configure` ve `ALTER` hiç devreye girmez (sysadmin olmayan, `VIEW DEFINITION`
+yetkili bir kullanıcı da alır; `--dry-run` dahil). DAC **yalnız en az bir hedef şifreliyse** ve bir kez açılır.
+Karışık listede DAC açılamazsa şifresizler yine verilir, şifreliler hata sayılır ve komut exit 2 ile biter.
+
+Şifreli nesnede uzak DAC kapalıysa (RDSTEST'te varsayılan) **ekstra bir şey gerekmez**: komut kendisi geçici
+açar, iş bitince eski haline (0) alır (sysadmin gerekir).
+
+**Aynı anda iki `ddl`:** DAC tek oturuma izin verir. Biri uzak DAC'ı açmışken öbürü "zaten açık — dokunulmayacak"
+der ve bağlanamaz; hata mesajı bunu **büyük olasılıkla başka bir DAC oturumu açık** diye söyler. Bu çalıştırma
+ayara dokunmaz, yeniden de denemez (ayar açık kalmasın diye); öbür iş bitince yeniden çalıştırın. Ayar her zaman
+özgün değerine döner: yalnız 0→1 yapan çalıştırma, kendi sonunda 0'a alır.
 
 **Nasıl çalışır (güvenlik):** Şifreli tanım `sys.sysobjvalues.imageval` (valclass=1) içindedir ve yalnız **DAC
 (Dedicated Admin Connection)** üzerinden okunur — bağlantı `admin:` önekiyle açılır. Çözme, bilinen-düz-metin
@@ -445,6 +456,12 @@ sqlcli relationships ReportCatalog
 - **`copy --read-only` varsayılan açık** (v2.4): kaynağı tipik olarak üretim ERP'si olan bir araç, kaynağa yazabiliyorsa tek yanlış sorgu geri alınamaz
 
 ## Sürüm Notları
+
+### v2.8.1 (2026-11-22) — `ddl`: şifresiz nesnede DAC yok
+- `ddl` hedefleri önce **normal bağlantıda** çözer; şifresiz nesnenin tanımı DAC'sız gelir (DAC, otomatik DAC, `sp_configure` yok — `--dry-run` dahil). Önceden DAC şifre kontrolünden ÖNCE açıldığı için sysadmin olmayan kullanıcı şifresiz bir SP'yi bile okuyamıyordu (DAC hatası 42).
+- DAC yalnız en az bir hedef şifreliyse açılır; karışık listede DAC açılamazsa şifresizler yine verilir, exit 2.
+- Yeni `--include-plain`: `--like` ile şifresiz nesneleri de alır.
+- DAC açılamadığında mesaj nedeni ayırır: uzak DAC zaten açıksa ya da sunucu 17810 dönerse **büyük olasılıkla başka bir DAC oturumu açık** (ör. paralel `ddl`); yeniden deneme yok, ayar her zaman özgün değerine döner.
 
 ### v2.7.2 (2026-11-06) — PR #4 Codex bulguları
 - `explain --analyze`/`actual`: geri alınamaz yan etkili sorgu (nextval, dblink, NOTIFY, SQL Server `NEXT VALUE FOR`/`EXEC`…) varsayılan **reddedilir**; `--allow-side-effects` ile bilerek geçilir. Etiket "değişiklikler geri alındı" yerine "tablo değişiklikleri geri alındı". İki sağlayıcıda aynı (`Core/YanEtkiDenetimi.cs`).

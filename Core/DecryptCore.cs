@@ -105,4 +105,67 @@ public static class DecryptCore
 
         return dacPort is int p ? $"admin:{host},{p}" : $"admin:{host}";
     }
+
+    /// <summary>
+    /// DAC yalnız en az bir hedef şifreliyse gerekir. Şifresiz nesnenin tanımı normal bağlantıda
+    /// `sys.sql_modules.definition` ile okunur; DAC, otomatik DAC ve `sp_configure` hiç devreye girmez.
+    /// `--dry-run` da aynı kurala uyar (şifreli hedefin uzunluğunu okumak için DAC gerekir).
+    /// </summary>
+    public static bool NeedsDac(IEnumerable<bool> isEncryptedFlags) => isEncryptedFlags.Any(e => e);
+
+    /// <summary>Sunucunun "en fazla 1 DAC oturumu zaten var" hatası.</summary>
+    public const int DacAlreadyInUseError = 17810;
+
+    /// <summary>DAC açılamadığında uzak DAC ayarı hakkında bildiklerimiz.</summary>
+    public enum RemoteDacState
+    {
+        /// <summary>Ayar okunamadı.</summary>
+        Unknown,
+        /// <summary>Ayar 0 idi ve dokunulmadı (--no-auto-dac).</summary>
+        Off,
+        /// <summary>Ayar zaten 1 idi; bu çalıştırma dokunmadı.</summary>
+        AlreadyOn,
+        /// <summary>Ayarı bu çalıştırma 0→1 yaptı (iş bitince 0'a geri alınır).</summary>
+        OpenedByUs,
+    }
+
+    /// <summary>
+    /// DAC açılamadığında kullanıcıya verilecek mesaj. Uzak DAC zaten açıkken ya da sunucu 17810
+    /// döndürdüğünde en olası neden BAŞKA bir DAC oturumudur (ör. paralel çalışan ikinci bir
+    /// `sqlcli ddl`): DAC tek oturuma izin verir. Bu durumda yeniden deneme YAPILMAZ — ayar asla
+    /// açık bırakılmamalı; kullanıcı öbür iş bitince tekrar çalıştırır.
+    /// </summary>
+    public static string DescribeDacFailure(string errorFirstLine, int errorNumber, RemoteDacState state)
+    {
+        var sb = new StringBuilder();
+        sb.Append("DAC (Dedicated Admin Connection) açılamadı: ").Append(errorFirstLine).Append('\n');
+
+        bool otherSession = errorNumber == DacAlreadyInUseError || state == RemoteDacState.AlreadyOn;
+        if (otherSession)
+        {
+            sb.Append("  • Büyük olasılıkla BAŞKA bir DAC oturumu açık (ör. aynı anda çalışan başka bir `sqlcli ddl`).\n")
+              .Append("    DAC yalnız TEK oturuma izin verir; o iş bitince yeniden çalıştırın.\n");
+            if (state == RemoteDacState.AlreadyOn)
+                sb.Append("  • Uzak DAC zaten açıktı; bu çalıştırma ayara dokunmadı (açan oturum geri alacak).\n");
+        }
+        else if (state == RemoteDacState.OpenedByUs)
+        {
+            sb.Append("  • Uzak DAC bu çalıştırmada geçici açıldı ama bağlantı yine kurulamadı; ayar eski haline (0) alınacak.\n")
+              .Append("  • Arada başka bir DAC oturumu bağlanmış olabilir — DAC yalnız TEK oturuma izin verir.\n");
+        }
+        else if (state == RemoteDacState.Off)
+        {
+            sb.Append("  • Uzak DAC kapalı (remote admin connections = 0) ve --no-auto-dac verildi.\n")
+              .Append("    --no-auto-dac olmadan çalıştırın (geçici açar, sonunda geri alır) ya da sunucuda açtırın.\n");
+        }
+        else
+        {
+            sb.Append("  • Uzak DAC kapalı olabilir. Sunucuda: EXEC sp_configure 'remote admin connections', 1; RECONFIGURE;\n")
+              .Append("  • DAC yalnız TEK oturuma izin verir — başka bir DAC açıksa kapatın.\n");
+        }
+
+        sb.Append("  • Port SQL Browser (UDP 1434) ile çözülür; kapalıysa --dac-port ile verin (ör. --dac-port 1434).\n")
+          .Append("  • Yönetici (sysadmin) yetkisi gerekir.");
+        return sb.ToString();
+    }
 }
