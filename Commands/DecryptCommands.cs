@@ -6,12 +6,15 @@ using SqlCli.Core;
 
 namespace SqlCli.Commands;
 
-// decrypt — WITH ENCRYPTION ile şifreli SP / view / function / trigger tanımını çözer.
+// ddl — nesne tanımını verir; WITH ENCRYPTION ile şifreli SP / view / function / trigger'ı çözer.
 //
-// Sadece SQL Server. Şifreli tanım sys.sysobjvalues.imageval (valclass=1) içindedir ve
-// YALNIZ DAC (Dedicated Admin Connection) üzerinden okunur. Algoritma: bilinen-düz-metin
-// XOR (bkz. Core/DecryptCore.cs). Hedef tek transaction içinde kukla metne ALTER'lanır,
-// şifreli hali okunur ve ROLLBACK ile ÖZGÜN HALİNE geri alınır — hedef kalıcı değişmez.
+// Sadece SQL Server. Hedefler önce NORMAL bağlantıda çözülür; şifresiz nesnenin tanımı
+// sys.sql_modules.definition'dan doğrudan okunur (DAC, otomatik DAC, sp_configure YOK).
+// Şifreli tanım sys.sysobjvalues.imageval (valclass=1) içindedir ve YALNIZ DAC (Dedicated
+// Admin Connection) üzerinden okunur; DAC bu yüzden yalnız en az bir hedef şifreliyse açılır.
+// Algoritma: bilinen-düz-metin XOR (bkz. Core/DecryptCore.cs). Hedef tek transaction içinde
+// kukla metne ALTER'lanır, şifreli hali okunur ve ROLLBACK ile ÖZGÜN HALİNE geri alınır —
+// hedef kalıcı değişmez.
 public class DecryptCommands
 {
     private sealed record ObjMeta(
@@ -29,7 +32,8 @@ public class DecryptCommands
         [Argument(Description = "Nesne adı (şema.ad veya ad). --like verilirse boş bırakılabilir.")] string? name = null,
         [Option("conn", Description = "Bağlantı string'i (override)")] string? conn = null,
         [Option("profile", Description = "sqlcli.json > Profiles içinden profil adı")] string? profile = null,
-        [Option("like", Description = "Toplu: ada göre LIKE deseni (ör. %sevk%).")] string? like = null,
+        [Option("like", Description = "Toplu: ada göre LIKE deseni (ör. %sevk%). Varsayılan yalnız şifreli nesneler.")] string? like = null,
+        [Option("include-plain", Description = "--like ile şifresiz nesneleri de al (onlar için DAC açılmaz)")] bool includePlain = false,
         [Option("out", Description = "Çıktı klasörü — her nesne şema.ad.sql olarak yazılır")] string? outDir = null,
         [Option("dac-port", Description = "DAC TCP portu (ör. 1434). Verilmezse SQL Browser çözer.")] int? dacPort = null,
         [Option("dac-server", Description = "DAC sunucu adını tamamen override et (admin: öneki otomatik eklenir)")] string? dacServer = null,
@@ -38,74 +42,36 @@ public class DecryptCommands
         [Option("dry-run", Description = "Hedefi ALTER etme; yalnız hedef uzunluğunu ve planı bildir")] bool dryRun = false)
     {
         if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(like))
-            Fail("Nesne adı ya da --like deseni gerekli. Örn: sqlcli decrypt --profile erp \"dbo.sip_sevkisle\"");
+            Fail("Nesne adı ya da --like deseni gerekli. Örn: sqlcli ddl --profile erp \"dbo.sip_sevkisle\"");
 
         var resolved = ConnectionResolver.Resolve(conn, profile)
             ?? Fail<ConnectionResolver.ResolvedConnection>("Bağlantı bilgisi bulunamadı. SQLCLI_CONN env, --conn, --profile veya sqlcli.json gerekli.");
 
         if (resolved.Dialect.Provider != DbProvider.SqlServer)
-            Fail("decrypt yalnız SQL Server içindir (WITH ENCRYPTION). Çözülen profil: " + resolved.Dialect.Name);
+            Fail("ddl yalnız SQL Server içindir (WITH ENCRYPTION). Çözülen profil: " + resolved.Dialect.Name);
 
-        var dacConnStr = BuildDacConnectionString(resolved.Effective, dacPort, dacServer);
+        Info($"[grey]Profil:[/] {Markup.Escape(resolved.ProfileName ?? "default")}");
 
-        Info($"[grey]Profil:[/] {Markup.Escape(resolved.ProfileName ?? "default")}  " +
-             $"[grey]DAC:[/] {Markup.Escape(MaskDac(dacConnStr))}");
+        // 1) Hedefler NORMAL bağlantıda çözülür. Şifresiz nesnenin tanımı da buradan okunur;
+        //    DAC'a, otomatik DAC'a ya da sp_configure'a hiç gerek yoktur (sysadmin olmayan
+        //    kullanıcı da düz tanımı alabilsin diye).
+        await using var normal = new SqlConnection(resolved.Effective);
+        await normal.OpenAsync();
 
-        // DAC bağlantısı. Varsayılan: önce olduğu gibi dene; açılamazsa (muhtemelen kapalı)
-        // OTOMATİK olarak uzak DAC'ı aç, yeniden dene ve iş bitince (finally) ESKİ HALİNE al.
-        // --no-auto-dac ile bu otomatik açma kapatılır (yalnız dener).
-        bool autoDac = !noAutoDac;
-        bool dacTempOpened = false;
-
-        try
-        {
-        await using var dac = new SqlConnection(dacConnStr);
-        try
-        {
-            await dac.OpenAsync();
-        }
-        catch (SqlException firstError)
-        {
-            // DAC açılamadı. Otomatik açma kapalıysa ya da set'i açmak derde deva olmazsa: net hata.
-            bool couldOpen = false;
-            if (autoDac)
-            {
-                try { dacTempOpened = await EnsureRemoteDacAsync(resolved.Effective); }
-                catch (Exception openError)
-                {
-                    throw new CommandExitedException(
-                        DacError(firstError) + $"\n  (otomatik açma da başarısız: {openError.Message})", 2);
-                }
-                couldOpen = dacTempOpened;
-            }
-
-            if (!couldOpen)
-                // Ya auto kapalı, ya da uzak DAC zaten AÇIKtı (başka bir sorun var: firewall/yetki).
-                throw new CommandExitedException(DacError(firstError), 2);
-
-            // Setti biz açtık — DAC dinleyicisi hazır olana dek yeniden deneyerek aç.
-            try
-            {
-                await OpenDacWithRetryAsync(dac, enableDac: true);
-            }
-            catch (SqlException ex2)
-            {
-                throw new CommandExitedException(DacError(ex2), 2);
-            }
-        }
-
-        // Hedef listesi
         List<ObjMeta> targets;
         if (!string.IsNullOrWhiteSpace(like))
         {
-            targets = await ListEncryptedAsync(dac, like!);
+            targets = await ListByPatternAsync(normal, like!, includePlain);
             if (targets.Count == 0)
-                Fail($"'{like}' desenine uyan şifreli nesne yok.");
-            Info($"[cyan]{targets.Count}[/] şifreli nesne bulundu.");
+                Fail(includePlain
+                    ? $"'{like}' desenine uyan modül (SP/view/function/trigger) yok."
+                    : $"'{like}' desenine uyan şifreli nesne yok. (Şifresizler için --include-plain)");
+            int encCount = targets.Count(t => t.IsEncrypted);
+            Info($"[cyan]{targets.Count}[/] nesne bulundu ([cyan]{encCount}[/] şifreli).");
         }
         else
         {
-            var m = await ResolveObjectAsync(dac, name!)
+            var m = await ResolveObjectAsync(normal, name!)
                 ?? Fail<ObjMeta>($"Nesne bulunamadı: {name}. (Veritabanı: bağlantıdaki DB)");
             targets = new() { m };
         }
@@ -113,71 +79,173 @@ public class DecryptCommands
         if (!string.IsNullOrWhiteSpace(outDir))
             Directory.CreateDirectory(outDir!);
 
-        int ok = 0, skipped = 0, error = 0;
-        bool multiToStdout = string.IsNullOrWhiteSpace(outDir) && targets.Count > 1;
+        // 2) DAC yalnız en az bir hedef şifreliyse açılır (karışık listede de yalnız bir kez).
+        bool needsDac = DecryptCore.NeedsDac(targets.Select(t => t.IsEncrypted));
+        bool dacTempOpened = false;   // true = uzak DAC ayarını BİZ 0→1 yaptık; finally'de 0'a dönmeli
+        SqlConnection? dac = null;
+        string? dacFailure = null;
 
-        foreach (var m in targets)
+        try
         {
-            try
+            if (needsDac)
             {
-                string sql;
-                if (!m.IsEncrypted)
+                var dacConnStr = BuildDacConnectionString(resolved.Effective, dacPort, dacServer);
+                Info($"[grey]DAC:[/] {Markup.Escape(MaskDac(dacConnStr))}");
+                dac = new SqlConnection(dacConnStr);
+                try
                 {
-                    // Şifreli değilse doğrudan tanımı ver (DAC'a gerek yok ama zaten açık).
-                    sql = await ReadPlainDefinitionAsync(dac, m.ObjectId)
-                          ?? throw new InvalidOperationException("Tanım okunamadı (modül tanımı boş).");
-                    Info($"  [yellow]○[/] {m.Schema}.{m.Name} şifreli değil — tanım doğrudan alındı.");
+                    await OpenDacAsync(dac, resolved.Effective, autoDac: !noAutoDac, opened => dacTempOpened = opened);
                 }
-                else if (dryRun)
+                catch (DacOpenException ex)
                 {
-                    var n = await TargetCharCountAsync(dac, m.ObjectId);
-                    Info($"  [grey][[DRY-RUN]][/] {m.Schema}.{m.Name} ({m.Type}) — {n} karakter; ALTER çalıştırılmadı.");
-                    skipped++;
-                    continue;
+                    // Şifresiz hedefler yine verilir; şifreliler hata sayılır ve sonunda exit 2.
+                    dacFailure = ex.Message;
+                    Info($"[red]{Markup.Escape(ex.Message)}[/]");
                 }
-                else
-                {
-                    sql = await DecryptEncryptedAsync(dac, m);
-                    Info($"  [green]✓[/] {m.Schema}.{m.Name} çözüldü ({sql.Length} karakter).");
-                }
+            }
 
-                if (!string.IsNullOrWhiteSpace(outDir))
+            int ok = 0, skipped = 0, error = 0;
+            bool multiToStdout = string.IsNullOrWhiteSpace(outDir) && targets.Count > 1;
+
+            foreach (var m in targets)
+            {
+                try
                 {
-                    var path = Path.Combine(outDir!, m.FileBase + ".sql");
-                    if (File.Exists(path) && !overwrite)
+                    string sql;
+                    if (!m.IsEncrypted)
                     {
-                        Info($"    [yellow]var, atlandı[/] (--overwrite ile yaz): {Markup.Escape(path)}");
+                        // Şifresiz: tanım normal bağlantıdan, DAC'sız.
+                        sql = await ReadPlainDefinitionAsync(normal, m.ObjectId)
+                              ?? throw new InvalidOperationException(
+                                  "Tanım okunamadı (sys.sql_modules.definition boş) — VIEW DEFINITION yetkisi eksik olabilir.");
+                        Info($"  [yellow]○[/] {m.Schema}.{m.Name} şifreli değil — tanım doğrudan alındı (DAC'sız).");
+                    }
+                    else if (dac is null || dacFailure is not null)
+                    {
+                        throw new InvalidOperationException("şifreli; DAC açılamadığı için çözülemedi.");
+                    }
+                    else if (dryRun)
+                    {
+                        var n = await TargetCharCountAsync(dac, m.ObjectId);
+                        Info($"  [grey][[DRY-RUN]][/] {m.Schema}.{m.Name} ({m.Type}) — {n} karakter; ALTER çalıştırılmadı.");
                         skipped++;
                         continue;
                     }
-                    await File.WriteAllTextAsync(path, sql, new UTF8Encoding(false));
-                    Info($"    [grey]yazıldı:[/] {Markup.Escape(path)}");
-                }
-                else
-                {
-                    if (multiToStdout) Console.Out.WriteLine($"-- ===== {m.Schema}.{m.Name} =====");
-                    Console.Out.WriteLine(sql);
-                    if (multiToStdout) Console.Out.WriteLine("GO");
-                }
-                ok++;
-            }
-            catch (Exception ex)
-            {
-                error++;
-                Info($"  [red]✗ {Markup.Escape(m.Schema)}.{Markup.Escape(m.Name)}: {Markup.Escape(ex.Message)}[/]");
-            }
-        }
+                    else
+                    {
+                        sql = await DecryptEncryptedAsync(dac, m);
+                        Info($"  [green]✓[/] {m.Schema}.{m.Name} çözüldü ({sql.Length} karakter).");
+                    }
 
-        Info($"\n[grey]Bitti — çözüldü:{ok} atlandı:{skipped} hata:{error}[/]");
-        if (error > 0 && ok == 0) throw new CommandExitedException(1);
+                    if (!string.IsNullOrWhiteSpace(outDir))
+                    {
+                        var path = Path.Combine(outDir!, m.FileBase + ".sql");
+                        if (File.Exists(path) && !overwrite)
+                        {
+                            Info($"    [yellow]var, atlandı[/] (--overwrite ile yaz): {Markup.Escape(path)}");
+                            skipped++;
+                            continue;
+                        }
+                        await File.WriteAllTextAsync(path, sql, new UTF8Encoding(false));
+                        Info($"    [grey]yazıldı:[/] {Markup.Escape(path)}");
+                    }
+                    else
+                    {
+                        if (multiToStdout) Console.Out.WriteLine($"-- ===== {m.Schema}.{m.Name} =====");
+                        Console.Out.WriteLine(sql);
+                        if (multiToStdout) Console.Out.WriteLine("GO");
+                    }
+                    ok++;
+                }
+                catch (Exception ex)
+                {
+                    error++;
+                    Info($"  [red]✗ {Markup.Escape(m.Schema)}.{Markup.Escape(m.Name)}: {Markup.Escape(ex.Message)}[/]");
+                }
+            }
+
+            Info($"\n[grey]Bitti — alındı/çözüldü:{ok} atlandı:{skipped} hata:{error}[/]");
+            if (dacFailure is not null) throw new CommandExitedException(2);
+            if (error > 0 && ok == 0) throw new CommandExitedException(1);
         }
         finally
         {
+            if (dac is not null) await dac.DisposeAsync();
+            // Ayar HER ZAMAN özgün değerine döner: yalnız biz 0→1 yaptıysak 0'a alınır.
             if (dacTempOpened) await TryDisableRemoteDacAsync(resolved.Effective);
         }
     }
 
-    // ─── Uzak DAC aç/kapat (--enable-dac) ────────────────────────────────
+    // DAC açılamadı — mesaj kullanıcıya gösterilmeye hazırdır.
+    private sealed class DacOpenException(string message) : Exception(message);
+
+    // DAC'ı açar. Önce olduğu gibi dener; açılamazsa ve autoDac açıksa uzak DAC ayarı 0 ise
+    // geçici 1 yapar (setTempOpened(true) ile çağırana bildirir, geri alma çağıranın finally'sindedir)
+    // ve kısa yeniden denemeyle bağlanır. Ayar zaten 1 ise DOKUNMAZ ve yeniden DENEMEZ: en olası neden
+    // başka bir DAC oturumudur (DAC tek oturum) — ayarı açık bırakabilecek bir döngüye girilmez.
+    private static async Task OpenDacAsync(SqlConnection dac, string normalConnStr, bool autoDac, Action<bool> setTempOpened)
+    {
+        SqlException firstError;
+        try
+        {
+            await dac.OpenAsync();
+            return;
+        }
+        catch (SqlException ex) { firstError = ex; }
+
+        var firstLine = firstError.Message.Split('\n')[0];
+
+        if (!autoDac)
+        {
+            var state = await ReadRemoteDacStateAsync(normalConnStr);
+            throw new DacOpenException(DecryptCore.DescribeDacFailure(firstLine, firstError.Number, state));
+        }
+
+        bool opened;
+        try { opened = await EnsureRemoteDacAsync(normalConnStr); }
+        catch (Exception openError)
+        {
+            throw new DacOpenException(
+                DecryptCore.DescribeDacFailure(firstLine, firstError.Number, DecryptCore.RemoteDacState.Unknown) +
+                $"\n  (otomatik açma da başarısız: {openError.Message})");
+        }
+        setTempOpened(opened);
+
+        if (!opened)
+            // Uzak DAC zaten açıktı ama bağlanamadık → büyük olasılıkla başka bir DAC oturumu.
+            throw new DacOpenException(
+                DecryptCore.DescribeDacFailure(firstLine, firstError.Number, DecryptCore.RemoteDacState.AlreadyOn));
+
+        // Ayarı biz açtık — DAC dinleyicisi hazır olana dek kısa yeniden denemeyle bağlan.
+        try
+        {
+            await OpenDacWithRetryAsync(dac, enableDac: true);
+        }
+        catch (SqlException ex2)
+        {
+            throw new DacOpenException(DecryptCore.DescribeDacFailure(
+                ex2.Message.Split('\n')[0], ex2.Number, DecryptCore.RemoteDacState.OpenedByUs));
+        }
+    }
+
+    // Uzak DAC ayarını yalnız OKUR (yazma yok); hata mesajını netleştirmek için.
+    private static async Task<DecryptCore.RemoteDacState> ReadRemoteDacStateAsync(string normalConnStr)
+    {
+        try
+        {
+            await using var c = new SqlConnection(ConnectionResolver.ExpandEnv(normalConnStr));
+            await c.OpenAsync();
+            var cur = Convert.ToInt32(await ScalarAsync(c,
+                "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'remote admin connections'"));
+            return cur == 1 ? DecryptCore.RemoteDacState.AlreadyOn : DecryptCore.RemoteDacState.Off;
+        }
+        catch
+        {
+            return DecryptCore.RemoteDacState.Unknown;
+        }
+    }
+
+    // ─── Uzak DAC aç/kapat (otomatik DAC) ────────────────────────────────
 
     // Uzak DAC kapalıysa açar; döndürdüğü true = BİZ açtık, geri alınmalı.
     private static async Task<bool> EnsureRemoteDacAsync(string normalConnStr)
@@ -188,7 +256,7 @@ public class DecryptCommands
             "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'remote admin connections'"));
         if (cur == 1)
         {
-            Info("[grey]remote DAC zaten açık — dokunulmayacak.[/]");
+            Info("[grey]remote DAC zaten açık (başka bir oturum açmış olabilir) — dokunulmayacak.[/]");
             return false;
         }
         await ExecAsync(c, "EXEC sp_configure 'remote admin connections', 1; RECONFIGURE;");
@@ -308,20 +376,21 @@ public class DecryptCommands
         return b.Length / 2;
     }
 
-    private static async Task<string?> ReadPlainDefinitionAsync(SqlConnection dac, int objId)
+    // Şifresiz modülün tanımı — normal bağlantı yeter (VIEW DEFINITION yetkisi gerekir).
+    private static async Task<string?> ReadPlainDefinitionAsync(SqlConnection c, int objId)
     {
-        await using var cmd = dac.CreateCommand();
+        await using var cmd = c.CreateCommand();
         cmd.CommandText = "SELECT definition FROM sys.sql_modules WHERE object_id = @o";
         cmd.Parameters.Add(new SqlParameter("@o", objId));
         var o = await cmd.ExecuteScalarAsync();
         return o is string s ? s : null;
     }
 
-    // ─── Metadata ────────────────────────────────────────────────────────
+    // ─── Metadata (normal bağlantıda) ────────────────────────────────────
 
-    private static async Task<ObjMeta?> ResolveObjectAsync(SqlConnection dac, string name)
+    private static async Task<ObjMeta?> ResolveObjectAsync(SqlConnection c, string name)
     {
-        await using var cmd = dac.CreateCommand();
+        await using var cmd = c.CreateCommand();
         cmd.CommandText = @"
             SELECT o.object_id, o.type,
                    s.name AS sch, o.name AS nm,
@@ -345,21 +414,24 @@ public class DecryptCommands
             IsEncrypted: rd.GetInt32(6) == 1);
     }
 
-    private static async Task<List<ObjMeta>> ListEncryptedAsync(SqlConnection dac, string like)
+    // --like: varsayılan yalnız şifreli modüller; includePlain ile şifresizler de (karışık liste).
+    private static async Task<List<ObjMeta>> ListByPatternAsync(SqlConnection c, string like, bool includePlain)
     {
-        await using var cmd = dac.CreateCommand();
+        await using var cmd = c.CreateCommand();
         cmd.CommandText = @"
             SELECT o.object_id, o.type,
                    s.name AS sch, o.name AS nm,
                    OBJECT_SCHEMA_NAME(o.parent_object_id) AS psch,
-                   OBJECT_NAME(o.parent_object_id)        AS pnm
+                   OBJECT_NAME(o.parent_object_id)        AS pnm,
+                   CONVERT(int, ISNULL(OBJECTPROPERTYEX(o.object_id, 'IsEncrypted'), 0)) AS is_enc
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
             WHERE o.type IN ('P','PC','RF','V','FN','IF','TF','TR')
-              AND CONVERT(int, ISNULL(OBJECTPROPERTYEX(o.object_id, 'IsEncrypted'), 0)) = 1
+              AND (@all = 1 OR CONVERT(int, ISNULL(OBJECTPROPERTYEX(o.object_id, 'IsEncrypted'), 0)) = 1)
               AND o.name LIKE @like
             ORDER BY s.name, o.name";
         cmd.Parameters.Add(new SqlParameter("@like", like));
+        cmd.Parameters.Add(new SqlParameter("@all", includePlain ? 1 : 0));
 
         var list = new List<ObjMeta>();
         await using var rd = await cmd.ExecuteReaderAsync();
@@ -371,7 +443,7 @@ public class DecryptCommands
                 Name: rd.GetString(3),
                 ParentSchema: rd.IsDBNull(4) ? null : rd.GetString(4),
                 ParentName: rd.IsDBNull(5) ? null : rd.GetString(5),
-                IsEncrypted: true));
+                IsEncrypted: rd.GetInt32(6) == 1));
         return list;
     }
 
@@ -395,13 +467,6 @@ public class DecryptCommands
         System.Text.RegularExpressions.Regex.Replace(
             connStr, @"Password=[^;]+", "Password=***",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-    private static string DacError(SqlException ex) =>
-        "DAC (Dedicated Admin Connection) açılamadı: " + ex.Message.Split('\n')[0] + "\n" +
-        "  • Uzak DAC kapalı olabilir. Sunucuda: EXEC sp_configure 'remote admin connections', 1; RECONFIGURE;\n" +
-        "  • DAC yalnız TEK oturuma izin verir — başka bir DAC açıksa kapatın.\n" +
-        "  • Port SQL Browser (UDP 1434) ile çözülür; kapalıysa --dac-port ile verin (ör. --dac-port 1434).\n" +
-        "  • Yönetici (sysadmin) yetkisi gerekir.";
 
     // ─── yardımcılar ─────────────────────────────────────────────────────
 
